@@ -4,6 +4,7 @@
 set -uo pipefail
 REPO="${0:A:h:h}"
 cd "$REPO" || exit 1
+source "$REPO/deploy/env.sh"
 mkdir -p data/logs
 LOCK="$REPO/data/ops.lock"
 if mkdir "$LOCK" 2>/dev/null; then

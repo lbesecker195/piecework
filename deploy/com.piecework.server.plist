@@ -7,7 +7,7 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd "__REPO__" &amp;&amp; set -a &amp;&amp; [ -f .env ] &amp;&amp; source .env; set +a; exec node --disable-warning=ExperimentalWarning src/server.js</string>
+    <string>cd "__REPO__" &amp;&amp; source deploy/env.sh &amp;&amp; set -a &amp;&amp; [ -f .env ] &amp;&amp; source .env; set +a; exec node --disable-warning=ExperimentalWarning src/server.js</string>
   </array>
   <key>WorkingDirectory</key><string>__REPO__</string>
   <key>RunAtLoad</key><true/>

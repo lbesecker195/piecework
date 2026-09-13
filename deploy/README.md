@@ -35,6 +35,10 @@ stay logged in as you.
 
 ## 2. The repo
 
+Keep this checkout **outside** `~/Documents`, `~/Desktop` and `~/Downloads`: macOS privacy
+protection blocks launchd jobs from those folders and the agent fails with "Operation not
+permitted". `~/piecework` is fine.
+
 ```bash
 git clone https://github.com/lbesecker195/piecework ~/piecework && cd ~/piecework
 npm ci --omit=dev
