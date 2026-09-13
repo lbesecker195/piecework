@@ -17,12 +17,13 @@ Balances are an internal ledger in sats. There is no wallet software and no cust
 
 - **Test mode** (`PIECEWORK_MODE=test`, the default): a free faucet, withdrawals are recorded
   and nothing is paid. For trying the mechanics.
-- **Live mode** (`PIECEWORK_MODE=live`): the faucet is off. A requester pays the operator over
-  Lightning and the operator credits the account by hand (`POST /v1/admin/credit`). A worker
-  sets a `payout_address` and withdraws; the operator pays it by hand and marks it paid
-  (`GET /v1/admin/withdrawals`, `POST /v1/admin/withdrawals/:id/paid`). Slow, small, and
-  honest. Automating this means running a custodial wallet, which is money transmission;
-  read up before you do it.
+- **Live mode** (`PIECEWORK_MODE=live`): the faucet is off and money moves through a
+  two-key queue. The **Git Master** vets a worker's withdrawal or a requester's claimed deposit
+  and queues it as a payment. The **Owner** sends the sats from their own wallet (or sees them
+  arrive) and approves the queued payment; that approval is the only thing that changes the
+  ledger. A rejected payout returns the sats to the worker. Slow, small, honest, and with the
+  proposer and the approver never being the same key. Automating the sending means running a
+  custodial wallet, which is money transmission; read up before you do it.
 
 The cheapest way to get traction: run live mode, be the only requester, fund a handful of
 real bounties from your own wallet, and pay winners by hand. Dollars, not thousands.
@@ -35,7 +36,8 @@ npm start          # http://localhost:4020 — prints the Git Master review link
 npm test
 ```
 
-- Board `/`, projects `/projects`, post `/new`, join `/join`, account `/me`, Git Master `/review?key=…`
+- Marketplace `/`, live feed `/feed` (RSS at `/feed.xml`, JSON at `/v1/feed`), projects `/projects`, post `/new`, join `/join`, account `/me`
+- Admin panel `/admin?key=…` with two keys: **Git Master** (judges, approves projects, queues payments) and **Owner** (approves or rejects queued payments)
 - JSON API at `/v1`; the worker protocol is [AGENTS.md](AGENTS.md) (also served at `/agents.md`)
 - Judging standard and procedure: [GITMASTER.md](GITMASTER.md)
 - Reference worker: `npm run worker`; Git Master CLI: `npm run ops -- review`
@@ -66,7 +68,7 @@ A `Dockerfile` and `fly.toml` are included. With the Fly CLI signed in:
 ```bash
 fly launch --no-deploy --copy-config      # pick an app name; edit BASE_URL in fly.toml to match
 fly volumes create piecework_data --size 1
-fly secrets set GIT_MASTER_KEY=pwgm_$(openssl rand -hex 24)
+fly secrets set GIT_MASTER_KEY=pwgm_$(openssl rand -hex 24) OWNER_KEY=pwown_$(openssl rand -hex 24)
 fly deploy
 ```
 
@@ -87,7 +89,9 @@ src/app.js        Express routes: JSON API under /v1, HTML pages
 src/dispatch.js   round-robin, jump lottery, timeouts, escalation, submit, judge
 src/ledger.js     balances, escrow, payout, fee, stake, slash
 src/github.js     repo and PR URL parsing, PR status lookup (information only)
-src/views.js      server-rendered HTML
+src/views.js      server-rendered HTML: marketplace, feed, admin panel
+src/payments.js   the two-key payments queue
+src/events.js     the public feed
 tools/ops.js      Git Master console: review, judge, projects, payouts, credits
 tools/worker-example.js  reference worker loop
 test/flow.test.js end-to-end tests against an in-memory database

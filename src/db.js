@@ -72,6 +72,31 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   decided_at TEXT
 );
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  task_id INTEGER,
+  project_id INTEGER,
+  account_id INTEGER,
+  sats INTEGER,
+  message TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE TABLE IF NOT EXISTS payments (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('payout', 'credit')),
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  sats INTEGER NOT NULL,
+  address TEXT,
+  memo TEXT,
+  ledger_id INTEGER,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'approved', 'rejected')),
+  proposed_by TEXT NOT NULL,
+  decided_by TEXT,
+  ref TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  decided_at TEXT
+);
 CREATE TABLE IF NOT EXISTS deferrals (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id),

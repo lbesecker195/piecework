@@ -3,7 +3,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join as joinPath } from 'node:path';
 import express from 'express';
 import { PLATFORM_ID, publicAccount, q } from './db.js';
-import { accountFromRequest, cookie, isGitMaster, requireAccount, requireGitMaster } from './auth.js';
+import { accountFromRequest, adminRole, cookie, requireAccount, requireGitMaster, requireOwner } from './auth.js';
+import { emit, recent } from './events.js';
+import { approvePayment, listPayments, pendingWithdrawals, queueCredit, queuePayout, rejectPayment } from './payments.js';
 import { lockEscrow, move, payout, refundEscrow, releasableDeferred, releaseDeferred, stake, unstake } from './ledger.js';
 import { decline, dispatch, judge, submit } from './dispatch.js';
 import { parseRepo } from './github.js';
@@ -21,13 +23,22 @@ export function createApp({ db, cfg, rng = Math.random }) {
 
   const auth = (kind) => requireAccount(db, kind);
   const gm = requireGitMaster(cfg);
+  const owner = requireOwner(cfg);
   const ctxFor = (req) => ({
     viewer: publicAccount(accountFromRequest(db, req)),
-    gitMaster: isGitMaster(cfg, req),
+    role: adminRole(cfg, req),
+    gitMaster: adminRole(cfg, req) !== null,
     turnaroundMin: cfg.turnaroundMin,
     feePct: cfg.feeBps / 100,
     minBounty: cfg.minBounty,
   });
+
+  const adminAction = (roles, fn) => (req, res) => {
+    const role = adminRole(cfg, req);
+    if (!role || !roles.includes(role)) throw new HttpError(403, `${roles.join(' or ')} key required`);
+    fn(req, role);
+    res.redirect('/admin');
+  };
 
   // ------------------------------------------------------------------ domain helpers
   const handle = (value) => (value ? String(value).trim().replace(/^@/, '').toLowerCase().slice(0, 60) : null);
@@ -61,6 +72,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
     if (existing && existing.status !== 'declined') throw new HttpError(409, `${repo} is already ${existing.status}`);
     if (existing) db.prepare('DELETE FROM projects WHERE id = ?').run(existing.id);
     const info = db.prepare("INSERT INTO projects (requester_id, repo, description, status) VALUES (?, ?, ?, 'pending')").run(account.id, repo, description);
+    emit(db, 'project_requested', { project_id: Number(info.lastInsertRowid), account_id: account.id, message: `${account.name} asked to integrate ${repo}` });
     return q.project(db, Number(info.lastInsertRowid));
   }
 
@@ -69,6 +81,8 @@ export function createApp({ db, cfg, rng = Math.random }) {
     if (project.status !== 'pending') throw new HttpError(409, `project is already ${project.status}`);
     db.prepare('UPDATE projects SET status = ?, reason = ?, decided_at = ? WHERE id = ?')
       .run(decision === 'approve' ? 'approved' : 'declined', reason || null, nowIso(), project.id);
+    emit(db, decision === 'approve' ? 'project_approved' : 'project_declined', { project_id: project.id,
+      message: decision === 'approve' ? `🟢 ${project.repo} is in. The Git Master said yes${reason ? `: ${reason}` : ''}` : `${project.repo} was declined${reason ? `: ${reason}` : ''}` });
     return q.project(db, project.id);
   }
 
@@ -97,6 +111,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
       ).run(account.id, repo, title, text, bounty, maxBounty, maxBounty);
       const id = Number(info.lastInsertRowid);
       lockEscrow(db, account.id, id, maxBounty);
+      emit(db, 'task_posted', { task_id: id, account_id: account.id, sats: bounty, message: `💰 ${account.name} posted #${id} “${title}” on ${repo} for ${bounty.toLocaleString('en-US')} sats (up to ${maxBounty.toLocaleString('en-US')})` });
       return q.task(db, id);
     });
   }
@@ -107,6 +122,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
     tx(db, () => {
       refundEscrow(db, task, 'cancelled by requester');
       db.prepare("UPDATE tasks SET status = 'cancelled', updated_at = ? WHERE id = ?").run(nowIso(), task.id);
+      emit(db, 'task_cancelled', { task_id: task.id, message: `#${task.id} “${task.title}” was cancelled by ${account.name}` });
     });
   }
 
@@ -122,6 +138,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
       stake(db, cfg, account, amount);
       const pos = db.prepare('SELECT COALESCE(MAX(queue_pos), 0) AS m FROM accounts').get().m + 1;
       db.prepare('UPDATE accounts SET in_queue = 1, queue_pos = ?, strikes = 0 WHERE id = ?').run(pos, account.id);
+      emit(db, 'queue_joined', { account_id: account.id, sats: amount, message: `${account.name} joined the queue with ${amount.toLocaleString('en-US')} sats staked` });
     });
   }
 
@@ -131,6 +148,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
     tx(db, () => {
       unstake(db, account);
       db.prepare('UPDATE accounts SET in_queue = 0, jump_armed_on = NULL WHERE id = ?').run(account.id);
+      emit(db, 'queue_left', { account_id: account.id, message: `${account.name} left the queue` });
     });
   }
 
@@ -191,6 +209,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
     return {
       stats: stats(),
       testMode: cfg.testMode,
+      feed: recent(db, 12),
       projects: db.prepare("SELECT * FROM projects WHERE status = 'approved' ORDER BY id DESC LIMIT 50").all().map(projectView),
       pendingProjects: db.prepare("SELECT COUNT(*) AS n FROM projects WHERE status = 'pending'").get().n,
       open: db.prepare("SELECT * FROM tasks WHERE status = 'open' ORDER BY bounty DESC, id").all(),
@@ -212,7 +231,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
     flow: 'request a project (POST /v1/projects) → the Git Master approves → post tasks against it (POST /v1/tasks)',
     endpoints: ['POST /v1/accounts', 'GET /v1/projects', 'POST /v1/projects', 'GET /v1/admin/projects (Git Master)', 'POST /v1/admin/projects/:id/approve|decline (Git Master)', 'GET /v1/me', 'POST /v1/me/settings', 'POST /v1/deferred/release', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
       'POST /v1/queue/join', 'POST /v1/queue/leave', 'POST /v1/queue/jump', 'GET /v1/queue', 'GET /v1/assignments/current?wait=25',
-      'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/review (Git Master)', 'POST /v1/tasks/:id/judge (Git Master)', 'POST /v1/admin/credit (Git Master)', 'GET /v1/admin/withdrawals (Git Master)', 'POST /v1/admin/withdrawals/:id/paid (Git Master)'],
+      'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/feed', 'GET /v1/review (admin)', 'POST /v1/tasks/:id/judge (admin)', 'GET /v1/admin/withdrawals (admin)', 'GET|POST /v1/admin/payments (admin)', 'POST /v1/admin/payments/:id/approve|reject (Owner)'],
   }));
   app.post('/v1/accounts', (req, res) => {
     const { account, key } = createAccount(req.body || {});
@@ -232,21 +251,31 @@ export function createApp({ db, cfg, rng = Math.random }) {
     res.json({ ...result, balance: q.account(db, req.account.id).balance, deferred: q.account(db, req.account.id).deferred });
   });
   app.post('/v1/faucet', auth(), (req, res) => res.json({ balance: faucet(req.account), granted: cfg.faucetSats }));
-  app.post('/v1/me/settings', auth('worker'), (req, res) => {
-    const pct = Number(req.body?.defer_pct);
-    if (![0, 50].includes(pct)) throw new HttpError(400, 'defer_pct must be 0 or 50');
-    db.prepare('UPDATE accounts SET defer_pct = ? WHERE id = ?').run(pct, req.account.id);
-    res.json({ ...publicAccount(q.account(db, req.account.id)), note: pct ? 'half of every payout now goes to your deferred balance' : 'payouts go to your spendable balance' });
+  app.post('/v1/me/settings', auth(), (req, res) => {
+    const body = req.body || {};
+    if (body.defer_pct !== undefined) {
+      const pct = Number(body.defer_pct);
+      if (![0, 50].includes(pct)) throw new HttpError(400, 'defer_pct must be 0 or 50');
+      if (req.account.kind !== 'worker') throw new HttpError(403, 'only workers defer earnings');
+      db.prepare('UPDATE accounts SET defer_pct = ? WHERE id = ?').run(pct, req.account.id);
+    }
+    if (body.payout_address !== undefined) {
+      const address = String(body.payout_address).trim().slice(0, 120);
+      if (address && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new HttpError(400, 'payout_address must be a Lightning address like you@getalby.com');
+      db.prepare('UPDATE accounts SET payout_address = ? WHERE id = ?').run(address || null, req.account.id);
+    }
+    res.json(publicAccount(q.account(db, req.account.id)));
   });
   app.get('/v1/ledger', auth(), (req, res) => res.json(db.prepare('SELECT * FROM ledger WHERE account_id = ? ORDER BY id DESC LIMIT 200').all(req.account.id)));
   app.post('/v1/withdraw', auth(), (req, res) => {
     const amount = positiveInt(req.body?.sats, 'sats');
     if (!cfg.testMode && !req.account.payout_address) throw new HttpError(400, 'set payout_address on your account first');
-    const memo = cfg.testMode ? 'test mode: recorded, nothing was paid' : 'pending manual payout';
-    move(db, req.account.id, -amount, 'withdrawal', null, memo);
+    move(db, req.account.id, -amount, 'withdrawal', null, 'pending manual payout');
     res.json({
-      status: cfg.testMode ? 'recorded' : 'pending', sats: amount, balance: q.account(db, req.account.id).balance,
-      note: cfg.testMode ? 'test mode: no real payment was made' : 'the operator pays withdrawals by hand to your payout_address, normally within a day',
+      status: 'pending', sats: amount, balance: q.account(db, req.account.id).balance,
+      note: cfg.testMode
+        ? 'test mode: this goes through the payments queue but no real sats move'
+        : 'the Git Master queues it, the Owner pays it by hand to your payout_address and marks it paid, normally within a day',
     });
   });
 
@@ -333,26 +362,30 @@ export function createApp({ db, cfg, rng = Math.random }) {
   // Exposed for tests and operators; the server also runs it on a timer.
   app.post('/v1/admin/dispatch', gm, (_req, res) => res.json({ assigned: dispatch(db, cfg, rng) }));
 
-  // Manual money. Live mode runs with no custody software: the operator credits a requester
-  // after a Lightning payment lands in the operator's own wallet, and pays withdrawals by hand.
-  app.post('/v1/admin/credit', gm, (req, res) => {
-    const name = requireString(req.body?.account, 'account', { max: 40 });
-    const account = db.prepare('SELECT * FROM accounts WHERE lower(name) = lower(?)').get(name);
-    if (!account) throw new HttpError(404, 'no such account');
-    const sats = positiveInt(req.body?.sats, 'sats');
-    move(db, account.id, sats, 'deposit', null, req.body?.memo ? String(req.body.memo).slice(0, 200) : 'manual deposit');
-    res.json(publicAccount(q.account(db, account.id)));
+  // Money, ledger side. The Git Master queues payments; only the Owner approves, and approval
+  // is the only thing that touches the ledger. Nobody here moves sats.
+  app.get('/v1/admin/whoami', gm, (req, res) => res.json({ role: req.role }));
+  app.get('/v1/admin/withdrawals', gm, (_req, res) => res.json(pendingWithdrawals(db)));
+  app.get('/v1/admin/payments', gm, (req, res) => res.json(listPayments(db, req.query.status ? String(req.query.status) : 'queued')));
+  app.post('/v1/admin/payments', gm, (req, res) => {
+    const body = req.body || {};
+    let payment;
+    if (body.kind === 'payout') payment = queuePayout(db, positiveInt(body.withdrawal_id, 'withdrawal_id'), req.role);
+    else if (body.kind === 'credit') payment = queueCredit(db, requireString(body.account, 'account', { max: 40 }), positiveInt(body.sats, 'sats'), body.memo ? String(body.memo).slice(0, 200) : null, req.role);
+    else throw new HttpError(400, "kind must be 'payout' or 'credit'");
+    res.status(201).json(payment);
   });
-  app.get('/v1/admin/withdrawals', gm, (_req, res) => res.json(db.prepare(
-    "SELECT l.id, a.name, a.payout_address, -l.delta AS sats, l.memo, l.created_at FROM ledger l JOIN accounts a ON a.id = l.account_id WHERE l.kind = 'withdrawal' ORDER BY l.id DESC LIMIT 200",
-  ).all()));
-  app.post('/v1/admin/withdrawals/:id/paid', gm, (req, res) => {
-    const row = db.prepare("SELECT * FROM ledger WHERE id = ? AND kind = 'withdrawal'").get(Number(req.params.id));
-    if (!row) throw new HttpError(404, 'no such withdrawal');
-    const memo = `paid ${nowIso()}${req.body?.ref ? ` · ${String(req.body.ref).slice(0, 120)}` : ''}`;
-    db.prepare('UPDATE ledger SET memo = ? WHERE id = ?').run(memo, row.id);
-    res.json({ id: row.id, sats: -row.delta, memo });
-  });
+  const paymentOr404 = (req) => {
+    const payment = db.prepare('SELECT * FROM payments WHERE id = ?').get(Number(req.params.id));
+    if (!payment) throw new HttpError(404, 'no such payment');
+    return payment;
+  };
+  app.post('/v1/admin/payments/:id/approve', owner, (req, res) => res.json(tx(db, () => approvePayment(db, paymentOr404(req), req.role, req.body?.ref))));
+  app.post('/v1/admin/payments/:id/reject', owner, (req, res) => res.json(tx(db, () => rejectPayment(db, paymentOr404(req), req.role, req.body?.reason ? String(req.body.reason).slice(0, 300) : null))));
+
+  // Public feed.
+  app.get('/v1/feed', (req, res) => res.json(recent(db, Math.min(Number(req.query.limit) || 100, 500))));
+  app.get('/feed.xml', (_req, res) => res.type('application/rss+xml').send(views.rss(recent(db, 100), cfg.baseUrl)));
 
   // ------------------------------------------------------------------ HTML
   app.get('/agents.md', (_req, res) => res.type('text/markdown').send(readFileSync(joinPath(ROOT, 'AGENTS.md'), 'utf8')));
@@ -425,13 +458,11 @@ export function createApp({ db, cfg, rng = Math.random }) {
       res.status(error.status).send(views.projects({ approved: [], mine: [], error: error.message }, ctxFor(req)));
     }
   });
-  app.post('/review/projects/:id/:decision', (req, res) => {
-    if (!isGitMaster(cfg, req)) throw new HttpError(403, 'Git Master key required');
+  app.post('/admin/projects/:id/:decision', adminAction(['gitmaster', 'owner'], (req) => {
     const project = q.project(db, Number(req.params.id));
     if (!project) throw new HttpError(404, 'no such project');
     decideProject(project, req.params.decision, req.body.reason ? String(req.body.reason).slice(0, 500) : null);
-    res.redirect('/review');
-  });
+  }));
   app.get('/new', (req, res) => {
     const account = accountFromRequest(db, req);
     const mine = account ? db.prepare("SELECT * FROM projects WHERE requester_id = ? AND status = 'approved' ORDER BY id DESC").all(account.id) : [];
@@ -463,22 +494,37 @@ export function createApp({ db, cfg, rng = Math.random }) {
     cancelTask(account, task);
     res.redirect(`/tasks/${task.id}`);
   });
-  app.get('/review', (req, res) => {
-    if (!isGitMaster(cfg, req)) throw new HttpError(403, 'Git Master key required: open /review?key=<GIT_MASTER_KEY> once');
-    if (req.query.key) {
-      res.setHeader('Set-Cookie', cookie('pw_gm', String(req.query.key), { maxAgeDays: 30 }));
-      return res.redirect('/review');
-    }
-    const pending = db.prepare("SELECT * FROM projects WHERE status = 'pending' ORDER BY id").all().map(projectView);
-    res.send(views.review(reviewQueue(), ctxFor(req), pending));
+  app.get('/feed', (req, res) => res.send(views.feed(recent(db, 100), ctxFor(req))));
+  app.get('/review', (req, res) => res.redirect(req.query.key ? `/admin?key=${encodeURIComponent(String(req.query.key))}` : '/admin'));
+  const adminData = () => ({
+    stats: stats(),
+    queued: listPayments(db, 'queued'),
+    history: [...listPayments(db, 'approved'), ...listPayments(db, 'rejected')].sort((a, b) => b.id - a.id).slice(0, 20),
+    withdrawals: pendingWithdrawals(db).filter((w) => !w.payment_id),
+    projects: db.prepare("SELECT * FROM projects WHERE status = 'pending' ORDER BY id").all().map(projectView),
+    review: reviewQueue(),
+    accounts: db.prepare("SELECT id, kind, name, operator, balance, stake, deferred, in_queue, strikes, completed, earned, payout_address FROM accounts WHERE kind != 'platform' ORDER BY id DESC LIMIT 100").all(),
+    feed: recent(db, 20),
+    testMode: cfg.testMode,
   });
-  app.post('/review/:id', (req, res) => {
-    if (!isGitMaster(cfg, req)) throw new HttpError(403, 'Git Master key required');
+  app.get('/admin', (req, res) => {
+    const role = adminRole(cfg, req);
+    if (!role) throw new HttpError(403, 'admin key required: open /admin?key=<your key> once');
+    if (req.query.key) {
+      res.setHeader('Set-Cookie', cookie('pw_admin', String(req.query.key), { maxAgeDays: 30 }));
+      return res.redirect('/admin');
+    }
+    res.send(views.admin(adminData(), { ...ctxFor(req), role }));
+  });
+  app.post('/admin/payments/queue-payout', adminAction(['gitmaster', 'owner'], (req, role) => queuePayout(db, positiveInt(req.body.withdrawal_id, 'withdrawal_id'), role)));
+  app.post('/admin/payments/queue-credit', adminAction(['gitmaster', 'owner'], (req, role) => queueCredit(db, requireString(req.body.account, 'account', { max: 40 }), positiveInt(req.body.sats, 'sats'), req.body.memo ? String(req.body.memo).slice(0, 200) : null, role)));
+  app.post('/admin/payments/:id/approve', adminAction(['owner'], (req, role) => tx(db, () => approvePayment(db, paymentOr404(req), role, req.body.ref))));
+  app.post('/admin/payments/:id/reject', adminAction(['owner'], (req, role) => tx(db, () => rejectPayment(db, paymentOr404(req), role, req.body.reason))));
+  app.post('/admin/judge/:id', adminAction(['gitmaster', 'owner'], (req) => {
     const task = q.task(db, Number(req.params.id));
     if (!task) throw new HttpError(404, 'no such task');
     judge(db, cfg, task, req.body.verdict, req.body.reason ? String(req.body.reason).slice(0, 500) : null, (t, w) => payout(db, cfg, t, w));
-    res.redirect('/review');
-  });
+  }));
 
   // ------------------------------------------------------------------ errors
   app.use((req, _res, next) => next(new HttpError(404, `no route for ${req.method} ${req.path}`)));

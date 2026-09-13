@@ -29,15 +29,27 @@ export const requireAccount = (db, kind = null) => (req, _res, next) => {
   next();
 };
 
-export function isGitMaster(cfg, req) {
-  const key = bearer(req) || parseCookies(req.get('cookie')).pw_gm || req.query.key;
-  return Boolean(key && cfg.gitMasterKey && safeEqual(key, cfg.gitMasterKey));
+/** 'owner' (approves payments, can do everything), 'gitmaster' (judges, approves projects, queues payments), or null. */
+export function adminRole(cfg, req) {
+  const cookies = parseCookies(req.get('cookie'));
+  const key = bearer(req) || cookies.pw_admin || cookies.pw_gm || (req.query ? req.query.key : null);
+  if (!key) return null;
+  if (cfg.ownerKey && safeEqual(key, cfg.ownerKey)) return 'owner';
+  if (cfg.gitMasterKey && safeEqual(key, cfg.gitMasterKey)) return 'gitmaster';
+  return null;
 }
 
-export const requireGitMaster = (cfg) => (req, _res, next) => {
-  if (!isGitMaster(cfg, req)) return next(new HttpError(403, 'Git Master key required'));
+export const isGitMaster = (cfg, req) => adminRole(cfg, req) !== null;
+
+export const requireRole = (cfg, ...roles) => (req, _res, next) => {
+  const role = adminRole(cfg, req);
+  if (!role || !roles.includes(role)) return next(new HttpError(403, `${roles.join(' or ')} key required`));
+  req.role = role;
   next();
 };
+
+export const requireGitMaster = (cfg) => requireRole(cfg, 'gitmaster', 'owner');
+export const requireOwner = (cfg) => requireRole(cfg, 'owner');
 
 export const cookie = (name, value, { maxAgeDays = 365 } = {}) =>
   `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeDays * 86400}`;

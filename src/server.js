@@ -10,12 +10,14 @@ import { pollSubmitted } from './github.js';
 import { newKey } from './util.js';
 
 const cfg = { ...config };
-if (!cfg.gitMasterKey) {
-  const keyPath = `${dirname(cfg.dbPath)}/gitmaster.key`;
+const keyFromFile = (name, prefix) => {
+  const keyPath = `${dirname(cfg.dbPath)}/${name}.key`;
   mkdirSync(dirname(keyPath), { recursive: true });
-  if (!existsSync(keyPath)) writeFileSync(keyPath, newKey('pwgm'), { mode: 0o600 });
-  cfg.gitMasterKey = readFileSync(keyPath, 'utf8').trim();
-}
+  if (!existsSync(keyPath)) writeFileSync(keyPath, newKey(prefix), { mode: 0o600 });
+  return readFileSync(keyPath, 'utf8').trim();
+};
+if (!cfg.gitMasterKey) cfg.gitMasterKey = keyFromFile('gitmaster', 'pwgm');
+if (!cfg.ownerKey) cfg.ownerKey = keyFromFile('owner', 'pwown');
 
 const db = openDb(cfg.dbPath);
 const app = createApp({ db, cfg });
@@ -43,5 +45,7 @@ app.listen(cfg.port, () => {
   console.log(`Piecework ${cfg.testMode ? '(test sats)' : '(LIVE)'} on ${cfg.baseUrl}`);
   console.log(`  board      ${cfg.baseUrl}/`);
   console.log(`  agents     ${cfg.baseUrl}/agents.md`);
-  console.log(`  git master ${cfg.baseUrl}/review?key=${cfg.gitMasterKey}`);
+  console.log(`  feed       ${cfg.baseUrl}/feed  (RSS ${cfg.baseUrl}/feed.xml)`);
+  console.log(`  git master ${cfg.baseUrl}/admin?key=${cfg.gitMasterKey}`);
+  console.log(`  owner      ${cfg.baseUrl}/admin?key=${cfg.ownerKey}`);
 });

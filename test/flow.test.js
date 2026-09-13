@@ -8,7 +8,8 @@ import { tx } from '../src/util.js';
 import { config } from '../src/config.js';
 
 const GM = 'gm-test-key';
-const cfg = { ...config, testMode: true, gitMasterKey: GM, minStake: 100, minBounty: 10, faucetSats: 10000, turnaroundMin: 10, maxWorkersPerOperator: 1 };
+const OWNER = 'owner-test-key';
+const cfg = { ...config, testMode: true, gitMasterKey: GM, ownerKey: OWNER, minStake: 100, minBounty: 10, faucetSats: 10000, turnaroundMin: 10, maxWorkersPerOperator: 1 };
 const REPO = 'https://github.com/octo/demo';
 
 async function start() {
@@ -171,8 +172,12 @@ test('pages and edges', async (t) => {
   assert.match(board.data, /Piecework/);
   assert.match(board.data, /test sats/);
   assert.equal((await s.api('GET', '/agents.md')).status, 200);
-  assert.equal((await s.api('GET', '/review')).status, 403);
-  assert.equal((await s.api('GET', '/review', null, GM)).status, 200);
+  assert.equal((await s.api('GET', '/admin')).status, 403);
+  assert.equal((await s.api('GET', '/review', null, GM)).status, 302);
+  assert.match((await s.api('GET', '/admin', null, GM)).data, /Git Master/);
+  assert.match((await s.api('GET', '/admin', null, OWNER)).data, /Owner/);
+  assert.equal((await s.api('GET', '/feed')).status, 200);
+  assert.match((await s.api('GET', '/feed.xml')).data, /<rss/);
   assert.equal((await s.api('GET', '/v1/tasks/999')).status, 404);
   assert.equal((await s.api('GET', '/nope')).status, 404);
   const info = (await s.api('GET', '/v1')).data;
@@ -242,5 +247,69 @@ test('projects must be approved before tasks; only the owner posts', async (t) =
   const listed = (await s.api('GET', '/v1/projects')).data;
   assert.deepEqual([listed.length, listed[0].repo, listed[0].live_tasks], [1, 'octo/demo', 1]);
   assert.equal((await s.api('GET', '/projects')).status, 200);
-  assert.match((await s.api('GET', '/review', null, GM)).data, /awaiting a yes/);
+  assert.match((await s.api('GET', '/admin', null, GM)).data, /awaiting a yes/);
+});
+
+test('payments queue: Git Master proposes, only the Owner approves; feed records it', async (t) => {
+  const s = await start(); t.after(s.close);
+  const R = await s.account('requester', 'ada');
+  const W = await s.account('worker', 'omega', 'op-w');
+  await s.fund(W);
+  assert.equal((await s.api('POST', '/v1/me/settings', { payout_address: 'not-an-address' }, W.api_key)).status, 400);
+  assert.equal((await s.api('POST', '/v1/me/settings', { payout_address: 'omega@getalby.com' }, W.api_key)).data.payout_address, 'omega@getalby.com');
+  const withdrawal = await s.api('POST', '/v1/withdraw', { sats: 3000 }, W.api_key);
+  assert.deepEqual([withdrawal.status, withdrawal.data.balance], [200, 7000]);
+
+  assert.deepEqual((await s.api('GET', '/v1/admin/whoami', null, GM)).data, { role: 'gitmaster' });
+  assert.deepEqual((await s.api('GET', '/v1/admin/whoami', null, OWNER)).data, { role: 'owner' });
+  const pending = (await s.api('GET', '/v1/admin/withdrawals', null, GM)).data;
+  assert.deepEqual([pending.length, pending[0].sats, pending[0].payout_address, pending[0].payment_id], [1, 3000, 'omega@getalby.com', null]);
+
+  const queued = await s.api('POST', '/v1/admin/payments', { kind: 'payout', withdrawal_id: pending[0].id }, GM);
+  assert.deepEqual([queued.status, queued.data.status, queued.data.proposed_by, queued.data.address], [201, 'queued', 'gitmaster', 'omega@getalby.com']);
+  assert.equal((await s.api('POST', '/v1/admin/payments', { kind: 'payout', withdrawal_id: pending[0].id }, GM)).status, 409);
+  assert.equal((await s.api('POST', `/v1/admin/payments/${queued.data.id}/approve`, { ref: 'x' }, GM)).status, 403);
+  assert.equal((await s.api('POST', `/v1/admin/payments/${queued.data.id}/approve`, { ref: 'x' }, W.api_key)).status, 403);
+  const approved = await s.api('POST', `/v1/admin/payments/${queued.data.id}/approve`, { ref: 'lnbc-hash-123' }, OWNER);
+  assert.deepEqual([approved.status, approved.data.status, approved.data.decided_by, approved.data.ref], [200, 'approved', 'owner', 'lnbc-hash-123']);
+  assert.equal((await s.api('GET', '/v1/admin/withdrawals', null, GM)).data.length, 0);
+  const ledger = (await s.api('GET', '/v1/ledger', null, W.api_key)).data;
+  assert.match(ledger.find((l) => l.kind === 'withdrawal').memo, /^paid .*lnbc-hash-123/);
+
+  // A credit: proposed by the Git Master, landed by the Owner.
+  const credit = await s.api('POST', '/v1/admin/payments', { kind: 'credit', account: 'ada', sats: 5000, memo: 'invoice 42' }, GM);
+  assert.equal(credit.status, 201);
+  assert.equal((await s.api('GET', '/v1/me', null, R.api_key)).data.balance, 0);
+  await s.api('POST', `/v1/admin/payments/${credit.data.id}/approve`, { ref: 'settled' }, OWNER);
+  assert.equal((await s.api('GET', '/v1/me', null, R.api_key)).data.balance, 5000);
+
+  // A rejected payout returns the sats.
+  await s.api('POST', '/v1/withdraw', { sats: 1000 }, W.api_key);
+  const second = (await s.api('GET', '/v1/admin/withdrawals', null, GM)).data[0];
+  const q2 = (await s.api('POST', '/v1/admin/payments', { kind: 'payout', withdrawal_id: second.id }, GM)).data;
+  const rejected = await s.api('POST', `/v1/admin/payments/${q2.id}/reject`, { reason: 'address bounced' }, OWNER);
+  assert.equal(rejected.data.status, 'rejected');
+  assert.equal((await s.api('GET', '/v1/me', null, W.api_key)).data.balance, 7000);
+  assert.equal((await s.api('GET', '/v1/admin/payments?status=queued', null, GM)).data.length, 0);
+  assert.equal((await s.api('GET', '/v1/admin/payments?status=approved', null, GM)).data.length, 2);
+
+  const kinds = (await s.api('GET', '/v1/feed')).data.map((e) => e.kind);
+  for (const kind of ['payout', 'deposit']) assert.ok(kinds.includes(kind), `feed has ${kind}`);
+  assert.match((await s.api('GET', '/admin', null, OWNER)).data, /Payment history/);
+});
+
+test('the feed narrates the task lifecycle', async (t) => {
+  const s = await start(); t.after(s.close);
+  const R = await s.account('requester', 'ada');
+  const A = await s.account('worker', 'alpha', 'op-a');
+  await s.fund(R); await s.fund(A);
+  await s.api('POST', '/v1/queue/join', { stake: 100 }, A.api_key);
+  const task = await s.post(R, 1000);
+  dispatch(s.db, cfg, () => 0.99);
+  const cur = (await s.api('GET', '/v1/assignments/current', null, A.api_key)).data;
+  await s.api('POST', cur.submit.url, { pr_url: `${REPO}/pull/9` }, A.api_key);
+  await s.api('POST', `/v1/tasks/${task.id}/judge`, { verdict: 'accept', reason: 'good' }, GM);
+  const kinds = (await s.api('GET', '/v1/feed')).data.map((e) => e.kind).reverse();
+  assert.deepEqual(kinds, ['queue_joined', 'project_requested', 'project_approved', 'task_posted', 'assigned', 'submitted', 'accepted']);
+  assert.match((await s.api('GET', '/')).data, /Live feed/);
 });

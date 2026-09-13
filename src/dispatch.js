@@ -2,6 +2,7 @@ import { q } from './db.js';
 import { refundEscrow, slash, unstake } from './ledger.js';
 import { HttpError, nowIso, today, tx } from './util.js';
 import { parsePr } from './github.js';
+import { emit } from './events.js';
 
 const nextQueuePos = (db) => db.prepare('SELECT COALESCE(MAX(queue_pos), 0) AS m FROM accounts').get().m + 1;
 
@@ -36,6 +37,8 @@ export function dispatch(db, cfg, rng = Math.random, now = new Date()) {
         "INSERT INTO assignments (task_id, worker_id, via, status, assigned_at, expires_at) VALUES (?, ?, ?, 'active', ?, ?)",
       ).run(task.id, worker.id, via, now.toISOString(), expires.toISOString());
       db.prepare("UPDATE tasks SET status = 'assigned', updated_at = ? WHERE id = ?").run(now.toISOString(), task.id);
+      emit(db, 'assigned', { task_id: task.id, account_id: worker.id, sats: task.bounty,
+        message: `${worker.name} took #${task.id} “${task.title}” (${task.bounty.toLocaleString('en-US')} sats) via ${via === 'jump' ? 'queue jump 🎲' : 'round-robin'}` });
     });
     busy.add(worker.id);
     assigned.push({ task: task.id, worker: worker.id, via });
@@ -49,10 +52,12 @@ export function failRound(db, cfg, task, reason) {
   if (rounds >= cfg.maxRounds) {
     refundEscrow(db, task, `task failed after ${rounds} rounds`);
     db.prepare("UPDATE tasks SET status = 'failed', rounds = ?, updated_at = ? WHERE id = ?").run(rounds, nowIso(), task.id);
+    emit(db, 'failed', { task_id: task.id, message: `#${task.id} “${task.title}” failed after ${rounds} rounds; escrow refunded` });
     return { status: 'failed', bounty: task.bounty, rounds };
   }
   const bounty = Math.min(task.max_bounty, Math.ceil(task.bounty * (1 + cfg.escalationPct / 100)));
   db.prepare("UPDATE tasks SET status = 'open', bounty = ?, rounds = ?, updated_at = ? WHERE id = ?").run(bounty, rounds, nowIso(), task.id);
+  emit(db, 'reopened', { task_id: task.id, sats: bounty, message: `#${task.id} “${task.title}” is open again (${reason}); bounty now ${bounty.toLocaleString('en-US')} sats` });
   return { status: 'open', bounty, rounds, reason };
 }
 
@@ -75,7 +80,9 @@ export function sweepTimeouts(db, cfg, now = new Date()) {
       } else {
         results.push({ assignment: assignment.id, worker: worker.id, strikes });
       }
-      failRound(db, cfg, q.task(db, assignment.task_id), 'timeout');
+      const task = q.task(db, assignment.task_id);
+      emit(db, 'timeout', { task_id: task.id, account_id: worker.id, message: `${worker.name} ran out the clock on #${task.id}${strikes >= cfg.maxStrikes ? ' and was ejected from the queue' : ` (strike ${strikes})`}` });
+      failRound(db, cfg, task, 'timeout');
     });
   }
   return results;
@@ -93,6 +100,7 @@ export function submit(db, assignment, prUrl, now = new Date()) {
   tx(db, () => {
     db.prepare("UPDATE assignments SET status = 'submitted', pr_url = ?, submitted_at = ? WHERE id = ?").run(prUrl.trim(), now.toISOString(), assignment.id);
     db.prepare("UPDATE tasks SET status = 'submitted', updated_at = ? WHERE id = ?").run(now.toISOString(), task.id);
+    emit(db, 'submitted', { task_id: task.id, account_id: assignment.worker_id, message: `${q.account(db, assignment.worker_id).name} submitted a pull request for #${task.id} “${task.title}”` });
   });
 }
 
@@ -101,6 +109,7 @@ export function decline(db, assignment, now = new Date()) {
   tx(db, () => {
     db.prepare("UPDATE assignments SET status = 'declined', judged_at = ? WHERE id = ?").run(now.toISOString(), assignment.id);
     db.prepare("UPDATE tasks SET status = 'open', updated_at = ? WHERE id = ?").run(now.toISOString(), assignment.task_id);
+    emit(db, 'declined', { task_id: assignment.task_id, account_id: assignment.worker_id, message: `${q.account(db, assignment.worker_id).name} declined #${assignment.task_id}; back to the queue` });
   });
 }
 
@@ -113,13 +122,15 @@ export function judge(db, cfg, task, verdict, reason, payoutFn, now = new Date()
     return tx(db, () => {
       const result = payoutFn(task, assignment.worker_id);
       db.prepare("UPDATE assignments SET status = 'accepted', judged_at = ?, verdict_reason = ? WHERE id = ?").run(now.toISOString(), reason || null, assignment.id);
+      emit(db, 'accepted', { task_id: task.id, account_id: assignment.worker_id, sats: result.net, message: `✅ ${q.account(db, assignment.worker_id).name} earned ${result.net.toLocaleString('en-US')} sats for #${task.id} “${task.title}”` });
       return { verdict, ...result };
     });
   }
   if (verdict === 'reject') {
     return tx(db, () => {
       db.prepare("UPDATE assignments SET status = 'rejected', judged_at = ?, verdict_reason = ? WHERE id = ?").run(now.toISOString(), reason || null, assignment.id);
-      return { verdict, ...failRound(db, cfg, task, reason) };
+      emit(db, 'rejected', { task_id: task.id, account_id: assignment.worker_id, message: `❌ #${task.id} rejected by the Git Master: ${reason || 'no reason given'}` });
+      return { verdict, ...failRound(db, cfg, task, reason || 'rejected') };
     });
   }
   throw new HttpError(400, "verdict must be 'accept' or 'reject'");

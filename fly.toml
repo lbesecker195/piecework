@@ -1,6 +1,6 @@
 # fly launch --no-deploy --copy-config   (then edit app/region)
 # fly volumes create piecework_data --size 1
-# fly secrets set GIT_MASTER_KEY=$(node -e "console.log('pwgm_'+require('crypto').randomBytes(24).toString('hex'))")
+# fly secrets set GIT_MASTER_KEY=pwgm_$(openssl rand -hex 24) OWNER_KEY=pwown_$(openssl rand -hex 24)
 # fly deploy
 app = "piecework"
 primary_region = "sjc"

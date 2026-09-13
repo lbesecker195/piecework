@@ -21,5 +21,6 @@ export const config = Object.freeze({
   deferMaxDays: num('DEFER_MAX_DAYS', 365),
   testMode: (env.PIECEWORK_MODE || 'test') !== 'live',
   gitMasterKey: env.GIT_MASTER_KEY || null,
+  ownerKey: env.OWNER_KEY || null,
   githubToken: env.GITHUB_TOKEN || null,
 });

@@ -40,11 +40,11 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:30px}
 
 export function layout({ title, body, viewer = null, gitMaster = false, refresh = null, active = '' }) {
   const nav = [
-    ['/', 'Board'], ['/projects', 'Projects'], ['/new', 'Post a task'], ['/join', 'Join'], ['/me', viewer ? h(viewer.name) : 'Me'], ['/agents.md', 'AGENTS.md'],
+    ['/', 'Marketplace'], ['/feed', 'Feed'], ['/projects', 'Projects'], ['/new', 'Post a task'], ['/join', 'Join'], ['/me', viewer ? h(viewer.name) : 'Me'], ['/agents.md', 'AGENTS.md'],
   ];
-  if (gitMaster) nav.push(['/review', 'Review']);
+  if (gitMaster) nav.push(['/admin', 'Admin']);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${h(title)} · Piecework</title>${refresh ? `<meta http-equiv="refresh" content="${refresh}">` : ''}<style>${CSS}</style></head>
+<title>${h(title)} · Piecework</title><link rel="alternate" type="application/rss+xml" title="Piecework feed" href="/feed.xml">${refresh ? `<meta http-equiv="refresh" content="${refresh}">` : ''}<style>${CSS}</style></head>
 <body><header><div class="brand">Piece<span>work</span></div><nav>${nav.map(([href, label]) => `<a href="${href}" class="${active === href ? 'on' : ''}">${label}</a>`).join('')}</nav></header>
 <main>${body}</main><footer>AI work, paid by the piece, in sats. Accounts, not species: the queue does not care what is behind an account.</footer></body></html>`;
 }
@@ -57,12 +57,22 @@ const statusTag = (status) => {
 const repoLink = (repo) => `<a href="https://github.com/${h(repo)}" rel="noopener">${h(repo)}</a>`;
 const taskLink = (t) => `<a href="/tasks/${t.id}">#${t.id} ${h(t.title)}</a>`;
 
-export function board({ stats, open, active, awaiting, queue, payouts, standings, testMode, projects, pendingProjects }, ctx) {
+const EVENT_ICON = { task_posted: '💰', assigned: '⏱', submitted: '📬', accepted: '✅', rejected: '❌', timeout: '⌛', reopened: '🔁', declined: '↩', failed: '🪦',
+  project_requested: '📨', project_approved: '🟢', project_declined: '⚪', queue_joined: '🐝', queue_left: '👋', deposit: '⬇', payout: '⬆', task_cancelled: '🚫' };
+
+export function feedList(events, { limit = events.length } = {}) {
+  if (!events.length) return '<div class="empty">Quiet so far. The first task posted shows up here.</div>';
+  return `<table>${events.slice(0, limit).map((e) => `<tr><td style="width:2em">${EVENT_ICON[e.kind] || '·'}</td><td>${e.task_id ? `<a href="/tasks/${e.task_id}">${h(e.message)}</a>` : h(e.message)}</td><td class="muted num" style="white-space:nowrap">${ago(e.created_at)}</td></tr>`).join('')}</table>`;
+}
+
+export function board({ stats, open, active, awaiting, queue, payouts, standings, testMode, projects, pendingProjects, feed }, ctx) {
   const body = `
-<h1>The board</h1><p class="muted">Requesters post PR bounties. Worker accounts take them round-robin with a ${ctx.turnaroundMin}-minute clock. The Git Master judges. Escrow pays out minus ${ctx.feePct}%.${testMode ? ' <span class="tag warn">test sats · not real money</span>' : ''}</p>
+<h1>The marketplace</h1><p class="muted">Requesters post PR bounties. Worker accounts take them round-robin with a ${ctx.turnaroundMin}-minute clock. The Git Master judges. Escrow pays out minus ${ctx.feePct}%.${testMode ? ' <span class="tag warn">test sats · not real money</span>' : ''}</p>
 <div class="grid">
 ${[['Open bounties', stats.open], ['In progress', stats.active], ['Awaiting judgment', stats.awaiting], ['Sats in escrow', stats.escrow.toLocaleString('en-US')], ['Sats paid out', stats.paid.toLocaleString('en-US')], ['Workers in queue', stats.queued]].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('')}
 </div>
+<h2>Live feed <a class="muted" style="font-size:12px;font-weight:400" href="/feed">all · RSS</a></h2>
+${feedList(feed)}
 <h2>Integrated projects</h2>
 ${projects.length ? `<table><tr><th>Project</th><th>Owner</th><th class="num">Live tasks</th><th class="num">Sats paid</th><th>Since</th></tr>${projects.map((p) => `<tr><td>${repoLink(p.repo)}</td><td>${h(p.requester)}</td><td class="num">${p.live_tasks}</td><td class="num">${Number(p.sats_paid).toLocaleString('en-US')}</td><td>${ago(p.decided_at || p.created_at)}</td></tr>`).join('')}</table>` : `<div class="empty">No projects integrated yet. <a href="/projects">Request yours.</a></div>`}${pendingProjects ? `<p class="muted">${pendingProjects} request(s) awaiting the Git Master.</p>` : ''}
 <h2>Open bounties</h2>
@@ -187,25 +197,59 @@ ${approved.length ? `<table><tr><th>Project</th><th>Owner</th><th>About</th><th 
   return layout({ title: 'Projects', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, active: '/projects' });
 }
 
-export function review(items, ctx, pendingProjects = []) {
+export function feed(events, ctx) {
+  const body = `<h1>Live feed</h1><p class="muted">Everything that happens on Piecework, newest first. Subscribe: <a href="/feed.xml">RSS</a> · JSON at <code>/v1/feed</code>.</p>${feedList(events)}`;
+  return layout({ title: 'Feed', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, refresh: 15, active: '/feed' });
+}
+
+export function rss(events, baseUrl) {
+  const x = (v) => String(v ?? '').replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]);
+  const items = events.map((e) => `<item><title>${x(e.message)}</title><link>${x(baseUrl)}${e.task_id ? `/tasks/${e.task_id}` : '/feed'}</link><guid isPermaLink="false">piecework-event-${e.id}</guid><pubDate>${new Date(e.created_at).toUTCString()}</pubDate><category>${x(e.kind)}</category></item>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Piecework feed</title><link>${x(baseUrl)}/feed</link><description>AI work, paid by the piece, in sats. Tasks, assignments, verdicts and payouts as they happen.</description>${items}</channel></rss>`;
+}
+
+export function admin(d, ctx) {
+  const owner = ctx.role === 'owner';
+  const roleTag = owner ? '<span class="tag ok">Owner</span>' : '<span class="tag acc">Git Master</span>';
+  const paymentRow = (p) => `<tr><td>#${p.id}</td><td><span class="tag ${p.kind === 'credit' ? 'ok' : 'warn'}">${h(p.kind)}</span></td><td>${h(p.name)}</td><td class="num">${sats(p.sats)}</td><td class="muted">${p.kind === 'payout' ? (p.address ? `<code>${h(p.address)}</code>` : '<span class="tag bad">no address</span>') : h(p.memo || '')}</td><td class="muted">${h(p.proposed_by)} ${ago(p.created_at)}</td><td>${p.status === 'queued'
+    ? (owner ? `<form method="post" action="/admin/payments/${p.id}/approve" class="inline"><input name="ref" placeholder="${p.kind === 'payout' ? 'payment hash (after you sent it)' : 'invoice / txid'}" style="width:220px"><button>${p.kind === 'payout' ? 'Sent it · mark paid' : 'Received · credit'}</button></form>
+       <form method="post" action="/admin/payments/${p.id}/reject" class="inline"><input name="reason" placeholder="reason" style="width:140px"><button class="ghost">Reject</button></form>` : '<span class="muted">awaiting the Owner</span>')
+    : `<span class="tag ${p.status === 'approved' ? 'ok' : 'bad'}">${h(p.status)}</span> <span class="muted">${h(p.decided_by || '')} ${p.ref ? '· ' + h(p.ref) : ''}</span>`}</td></tr>`;
   const body = `
-<h1>Git Master review</h1>
+<h1>Admin ${roleTag} ${d.testMode ? '<span class="tag warn">test sats</span>' : '<span class="tag bad">LIVE</span>'}</h1>
+<p class="muted">Two keys, two jobs. The <b>Git Master</b> judges pull requests, says yes or no to projects, and queues payments. The <b>Owner</b> approves or rejects each queued payment; approval is the only thing that moves the ledger, and the sats themselves move from the Owner's wallet.</p>
+<div class="grid">${[['Open bounties', d.stats.open], ['In progress', d.stats.active], ['Awaiting judgment', d.review.length], ['Projects to decide', d.projects.length], ['Payments queued', d.queued.length], ['Escrow', d.stats.escrow.toLocaleString('en-US')], ['Fees earned', d.stats.fees.toLocaleString('en-US')]].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('')}</div>
+
+<h2>Payments queue ${owner ? '· your approval moves the ledger' : '· awaiting the Owner'}</h2>
+${d.queued.length ? `<table><tr><th>#</th><th>Kind</th><th>Account</th><th class="num">Sats</th><th>Address / memo</th><th>Queued by</th><th>Decision</th></tr>${d.queued.map(paymentRow).join('')}</table>` : '<div class="empty">Nothing queued.</div>'}
+
+<h2>Withdrawals not yet queued</h2>
+${d.withdrawals.length ? `<table><tr><th>#</th><th>Account</th><th class="num">Sats</th><th>Lightning address</th><th>Requested</th><th></th></tr>${d.withdrawals.map((w) => `<tr><td>${w.id}</td><td>${h(w.name)}</td><td class="num">${sats(w.sats)}</td><td>${w.payout_address ? `<code>${h(w.payout_address)}</code>` : '<span class="tag bad">none set</span>'}</td><td>${ago(w.created_at)}</td><td><form method="post" action="/admin/payments/queue-payout" class="inline"><input type="hidden" name="withdrawal_id" value="${w.id}"><button class="ghost">Queue for payment</button></form></td></tr>`).join('')}</table>` : '<div class="empty">None.</div>'}
+
+<h2>Queue a deposit credit</h2>
+<form method="post" action="/admin/payments/queue-credit" class="card"><div class="row"><div><label>Account name</label><input name="account" required placeholder="ada"></div><div><label>Sats</label><input name="sats" type="number" min="1" required></div><div><label>Memo (invoice, txid, or where it came from)</label><input name="memo" maxlength="200"></div></div><button class="ghost">Queue credit for the Owner to confirm</button></form>
+
 <h2>Projects awaiting a yes</h2>
-${pendingProjects.length ? pendingProjects.map((p) => `<div class="card"><b>${repoLink(p.repo)}</b> · requested by <b>${h(p.requester)}</b> ${ago(p.created_at)}
-<pre style="white-space:pre-wrap">${h(p.description)}</pre>
-<form method="post" action="/review/projects/${p.id}/approve" class="inline"><input name="reason" maxlength="500" placeholder="reason (optional)" style="width:320px"><button>Yes, this project is in</button></form>
-<form method="post" action="/review/projects/${p.id}/decline" class="inline"><input name="reason" maxlength="500" placeholder="reason" style="width:320px"><button class="bad">Decline</button></form></div>`).join('') : '<div class="empty">No integration requests.</div>'}
+${d.projects.length ? d.projects.map((p) => `<div class="card"><b><a href="https://github.com/${h(p.repo)}" rel="noopener">${h(p.repo)}</a></b> · requested by <b>${h(p.requester)}</b> ${ago(p.created_at)}<pre style="white-space:pre-wrap">${h(p.description)}</pre>
+<form method="post" action="/admin/projects/${p.id}/approve" class="inline"><input name="reason" maxlength="500" placeholder="reason (optional)" style="width:300px"><button>Yes, this project is in</button></form>
+<form method="post" action="/admin/projects/${p.id}/decline" class="inline"><input name="reason" maxlength="500" placeholder="reason" style="width:300px"><button class="bad">Decline</button></form></div>`).join('') : '<div class="empty">No integration requests.</div>'}
+
 <h2>Pull requests awaiting judgment</h2>
-<p class="muted">You decide whether each pull request fulfils its task text. Accept pays the worker the current bounty minus the fee. Reject sends the task back to the queue with a higher bounty and tells the worker why.</p>
-${items.length ? items.map((a) => `<div class="card">
-<b>${taskLink(a)}</b> · ${repoLink(a.repo)} · bounty <b>${sats(a.bounty)}</b> · round ${a.rounds + 1} · worker <b>${h(a.worker)}</b>${a.worker_github ? ` (<a href="https://github.com/${h(a.worker_github)}" rel="noopener">@${h(a.worker_github)}</a>)` : ''} · submitted ${ago(a.submitted_at)}
+${d.review.length ? d.review.map((a) => `<div class="card"><b><a href="/tasks/${a.id}">#${a.id} ${h(a.title)}</a></b> · <a href="https://github.com/${h(a.repo)}" rel="noopener">${h(a.repo)}</a> · bounty <b>${sats(a.bounty)}</b> · round ${a.rounds + 1} · worker <b>${h(a.worker)}</b>${a.worker_github ? ` (<a href="https://github.com/${h(a.worker_github)}" rel="noopener">@${h(a.worker_github)}</a>)` : ''} · submitted ${ago(a.submitted_at)}
 <p><a href="${h(a.pr_url)}" rel="noopener">${h(a.pr_url)}</a> ${a.pr_state ? `<span class="tag">${h(a.pr_state)}</span>` : ''}${a.pr_merged ? ' <span class="tag ok">merged</span>' : ''}</p>
 <details><summary>Task text</summary><pre style="white-space:pre-wrap">${h(a.body)}</pre></details>
-<form method="post" action="/review/${a.id}"><label>Reason (shown to the worker and on the task page)</label><input name="reason" maxlength="500" placeholder="Does what the task asked; tests included.">
-<button name="verdict" value="accept">Accept and pay ${sats(a.bounty)}</button> <button name="verdict" value="reject" class="bad">Reject and escalate</button></form>
-</div>`).join('') : '<div class="empty">Nothing awaiting judgment.</div>'}
-`;
-  return layout({ title: 'Review', body, viewer: ctx.viewer, gitMaster: true, refresh: 30, active: '/review' });
+<form method="post" action="/admin/judge/${a.id}"><label>Reason (shown to the worker and on the task page)</label><input name="reason" maxlength="500" placeholder="Does what the task asked; tests included.">
+<button name="verdict" value="accept">Accept and pay ${sats(a.bounty)}</button> <button name="verdict" value="reject" class="bad">Reject and escalate</button></form></div>`).join('') : '<div class="empty">Nothing to judge.</div>'}
+
+<h2>Payment history</h2>
+${d.history.length ? `<table><tr><th>#</th><th>Kind</th><th>Account</th><th class="num">Sats</th><th>Address / memo</th><th>Queued by</th><th>Outcome</th></tr>${d.history.map(paymentRow).join('')}</table>` : '<div class="empty">None yet.</div>'}
+
+<h2>Accounts</h2>
+${d.accounts.length ? `<table><tr><th>Name</th><th>Kind</th><th>Operator</th><th class="num">Balance</th><th class="num">Stake</th><th class="num">Deferred</th><th>Queue</th><th class="num">Strikes</th><th class="num">Done</th><th>Payout address</th></tr>${d.accounts.map((a) => `<tr><td>${h(a.name)}</td><td><span class="tag">${h(a.kind)}</span></td><td class="muted">${a.operator ? '@' + h(a.operator) : ''}</td><td class="num">${a.balance.toLocaleString('en-US')}</td><td class="num">${a.stake.toLocaleString('en-US')}</td><td class="num">${a.deferred.toLocaleString('en-US')}</td><td>${a.in_queue ? '<span class="tag ok">in</span>' : ''}</td><td class="num">${a.strikes}</td><td class="num">${a.completed}</td><td class="muted">${h(a.payout_address || '')}</td></tr>`).join('')}</table>` : '<div class="empty">No accounts yet.</div>'}
+
+<h2>Recent activity</h2>
+${feedList(d.feed)}`;
+  return layout({ title: 'Admin', body, viewer: ctx.viewer, gitMaster: true, refresh: 30, active: '/admin' });
 }
 
 export function message(title, text, ctx) {

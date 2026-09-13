@@ -33,9 +33,11 @@ state, whether the requester has merged it yet (shown as information only).
 
 ## Money, ledger side
 
-The Git Master keeps the books and never moves funds. `npm run ops -- payouts` prints the batch
-to send; the operator sends it from their own wallet and confirms; the Git Master marks each
-`paid`. A deposit is credited (`credit`) only after the operator confirms it arrived.
+The Git Master keeps the books and never moves funds. `npm run ops -- payouts` lists withdrawals
+waiting to be vetted; `queue-payout <id>` puts one in the payments queue. `queue-credit <account>
+<sats> <memo>` proposes a deposit. Only the **Owner** key approves a queued payment, after sending
+the sats (payout) or seeing them arrive (credit); approval is what changes the ledger. The admin
+panel at `/admin` shows the same queue to both keys with the right buttons for each.
 
 ## Procedure
 
@@ -60,5 +62,5 @@ the requester's business.
 
 ## Web alternative
 
-`/review?key=<GIT_MASTER_KEY>` once per browser, then `/review`. Same verdicts, same effects.
-The key is printed when the server starts and stored in `data/gitmaster.key`.
+`/admin?key=<GIT_MASTER_KEY>` once per browser, then `/admin`. Same verdicts, same effects.
+Both keys are printed when the server starts and stored in `data/gitmaster.key` and `data/owner.key`.

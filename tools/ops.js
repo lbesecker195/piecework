@@ -9,20 +9,25 @@
  *   ops.js projects                        integration requests awaiting a yes
  *   ops.js approve <projectId> [reason]    "yes, this project is in"
  *   ops.js decline <projectId> <reason>
- *   ops.js payouts                         withdrawals pending manual payment (the batch to send)
- *   ops.js paid <withdrawalId> [ref]       mark one paid after you sent it
- *   ops.js credit <account> <sats> [memo]  credit a deposit you have confirmed received
+ *   ops.js payouts                         withdrawals not yet queued (Git Master vets these)
+ *   ops.js queue-payout <withdrawalId>     put a vetted withdrawal in the payments queue
+ *   ops.js queue-credit <account> <sats> [memo]   propose a deposit credit
+ *   ops.js payments [queued|approved|rejected]    the payments queue
+ *   ops.js approve-payment <id> [ref]      OWNER key: mark a payout paid / land a credit
+ *   ops.js reject-payment <id> <reason>    OWNER key: refuse (a payout refunds the worker)
+ *   ops.js whoami
  *
- * Env: PIECEWORK_URL (default http://localhost:4020), GIT_MASTER_KEY (default: data/gitmaster.key)
+ * Env: PIECEWORK_URL (default http://localhost:4020); ADMIN_KEY, or GIT_MASTER_KEY / OWNER_KEY,
+ *      or data/gitmaster.key.
  */
 import { readFileSync } from 'node:fs';
 
 const url = (process.env.PIECEWORK_URL || 'http://localhost:4020').replace(/\/$/, '');
-let key = process.env.GIT_MASTER_KEY;
+let key = process.env.ADMIN_KEY || process.env.GIT_MASTER_KEY || process.env.OWNER_KEY;
 if (!key) {
   try { key = readFileSync(new URL('../data/gitmaster.key', import.meta.url), 'utf8').trim(); } catch { /* fall through */ }
 }
-if (!key) { console.error('set GIT_MASTER_KEY or run the server once to create data/gitmaster.key'); process.exit(2); }
+if (!key) { console.error('set ADMIN_KEY (or GIT_MASTER_KEY / OWNER_KEY), or run the server once to create data/gitmaster.key'); process.exit(2); }
 
 const [command = 'status', id, ...rest] = process.argv.slice(2);
 const tail = rest.join(' ') || null;
@@ -74,20 +79,28 @@ const commands = {
   },
   async approve() { need(id, 'project id'); const p = await call('POST', `/v1/admin/projects/${id}/approve`, { reason: tail }); console.log(`approved P${p.id} ${p.repo} — ${p.requester} may now post tasks`); },
   async decline() { need(id, 'project id'); need(tail, 'a reason'); const p = await call('POST', `/v1/admin/projects/${id}/decline`, { reason: tail }); console.log(`declined P${p.id} ${p.repo}: ${p.reason}`); },
+  async whoami() { console.log((await call('GET', '/v1/admin/whoami')).role); },
   async payouts() {
-    const items = (await call('GET', '/v1/admin/withdrawals')).filter((w) => String(w.memo || '').startsWith('pending'));
-    if (!items.length) return console.log('no payouts pending');
-    let total = 0;
+    const items = (await call('GET', '/v1/admin/withdrawals')).filter((w) => !w.payment_id);
+    if (!items.length) return console.log('no withdrawals waiting to be queued');
     console.log('id\tsats\tlightning address\taccount\trequested');
-    for (const w of items) { total += w.sats; console.log(`${w.id}\t${w.sats}\t${w.payout_address || '(none set)'}\t${w.name}\t${w.created_at}`); }
-    console.log(`\n${items.length} payout(s), ${total} sats total. Send them from your wallet, then: ops.js paid <id> [payment hash]`);
+    for (const w of items) console.log(`${w.id}\t${w.sats}\t${w.payout_address || '(none set)'}\t${w.name}\t${w.created_at}`);
+    console.log(`\n${items.length} withdrawal(s). Vet the account, then: ops.js queue-payout <id>`);
   },
-  async paid() { need(id, 'withdrawal id'); const r = await call('POST', `/v1/admin/withdrawals/${id}/paid`, { ref: tail }); console.log(`withdrawal ${r.id} (${r.sats} sats) marked: ${r.memo}`); },
-  async credit() {
+  async 'queue-payout'() { need(id, 'withdrawal id'); const p = await call('POST', '/v1/admin/payments', { kind: 'payout', withdrawal_id: Number(id) }); console.log(`queued payment #${p.id}: ${p.sats} sats to ${p.address || '(no address!)'} — awaiting the Owner`); },
+  async 'queue-credit'() {
     need(id, 'account name'); const [sats, ...memo] = rest; need(sats, 'sats');
-    const a = await call('POST', '/v1/admin/credit', { account: id, sats: Number(sats), memo: memo.join(' ') || null });
-    console.log(`credited ${sats} sats to ${a.name}; balance now ${a.balance}`);
+    const p = await call('POST', '/v1/admin/payments', { kind: 'credit', account: id, sats: Number(sats), memo: memo.join(' ') || null });
+    console.log(`queued payment #${p.id}: credit ${p.sats} sats to account ${p.account_id} — awaiting the Owner`);
   },
+  async payments() {
+    const status = id || 'queued';
+    const items = await call('GET', `/v1/admin/payments?status=${status}`);
+    if (!items.length) return console.log(`no ${status} payments`);
+    for (const p of items) console.log(`#${p.id}\t${p.kind}\t${p.sats} sats\t${p.name}\t${p.kind === 'payout' ? (p.address || '(no address)') : (p.memo || '')}\tby ${p.proposed_by} ${p.created_at}${p.decided_by ? `\t${p.status} by ${p.decided_by}${p.ref ? ' · ' + p.ref : ''}` : ''}`);
+  },
+  async 'approve-payment'() { need(id, 'payment id'); const p = await call('POST', `/v1/admin/payments/${id}/approve`, { ref: tail }); console.log(`approved payment #${p.id} (${p.kind}, ${p.sats} sats)`); },
+  async 'reject-payment'() { need(id, 'payment id'); need(tail, 'a reason'); const p = await call('POST', `/v1/admin/payments/${id}/reject`, { reason: tail }); console.log(`rejected payment #${p.id}: ${p.ref}`); },
 };
 
 if (!commands[command]) { console.error(`unknown command ${command}\n`); console.error(readFileSync(new URL(import.meta.url), 'utf8').split('*/')[0].split('\n').slice(2).join('\n')); process.exit(2); }
