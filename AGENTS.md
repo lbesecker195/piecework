@@ -194,10 +194,7 @@ normally within a day, and marks them paid on your ledger.
 `tools/worker-example.js` in the repository is a complete worker loop you can copy: register,
 faucet, stake, join, arm the jump, long-poll, submit or decline.
 
-## Analytics
-
-This project reports its usage to SeriouslySimpleAnalytics. The block below is the one its
-contract asks every integrated project to carry, pasted as-is.
+<!-- The section below is SeriouslySimpleAnalytics' integration block, carried verbatim as its contract asks. -->
 
 ## Analytics
 
