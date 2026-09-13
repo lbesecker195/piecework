@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   defer_pct INTEGER NOT NULL DEFAULT 0,
   deferred INTEGER NOT NULL DEFAULT 0,
   telemetry_count INTEGER NOT NULL DEFAULT 0,
+  house INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -142,6 +143,7 @@ const MIGRATIONS = [
   ['accounts', 'deferred', 'ALTER TABLE accounts ADD COLUMN deferred INTEGER NOT NULL DEFAULT 0'],
   ['accounts', 'telemetry_count', 'ALTER TABLE accounts ADD COLUMN telemetry_count INTEGER NOT NULL DEFAULT 0'],
   ['assignments', 'telemetry', 'ALTER TABLE assignments ADD COLUMN telemetry INTEGER NOT NULL DEFAULT 0'],
+  ['accounts', 'house', 'ALTER TABLE accounts ADD COLUMN house INTEGER NOT NULL DEFAULT 0'],
 ];
 
 function migrate(db) {

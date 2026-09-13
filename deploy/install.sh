@@ -4,21 +4,24 @@
 #   deploy/install.sh --interval 300
 #   deploy/install.sh --remove
 #   deploy/install.sh --ops-only   only the Git Master pass (the server runs elsewhere; set PIECEWORK_URL in .env)
+#   deploy/install.sh --worker     add the house worker pass (needs WORKER_KEY in .env); combine with --ops-only
 #   deploy/install.sh --dry-run    render the plists to a temp dir and lint them; touch nothing
 set -euo pipefail
 REPO="${0:A:h:h}"
-INTERVAL=600; MODE=install; OUT="$HOME/Library/LaunchAgents"; OPS_ONLY=0
+INTERVAL=600; MODE=install; OUT="$HOME/Library/LaunchAgents"; OPS_ONLY=0; WORKER=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --interval) INTERVAL="$2"; shift 2;;
     --remove) MODE=remove; shift;;
     --dry-run) MODE=dry; OUT="$(mktemp -d)"; shift;;
     --ops-only) OPS_ONLY=1; shift;;
+    --worker) WORKER=1; shift;;
     *) echo "unknown option $1"; exit 2;;
   esac
 done
 LABELS=(com.piecework.server com.piecework.ops)
 [ "$OPS_ONLY" = 1 ] && LABELS=(com.piecework.ops)
+[ "$WORKER" = 1 ] && LABELS+=(com.piecework.worker)
 
 if [ "$MODE" = remove ]; then
   for label in $LABELS; do launchctl bootout "gui/$UID/$label" 2>/dev/null || true; rm -f "$OUT/$label.plist"; done
@@ -30,7 +33,7 @@ for label in $LABELS; do
   sed -e "s|__REPO__|$REPO|g" -e "s|__INTERVAL__|$INTERVAL|g" "$REPO/deploy/$label.plist" > "$OUT/$label.plist"
   plutil -lint "$OUT/$label.plist"
 done
-chmod +x "$REPO/deploy/ops-pass.sh"
+chmod +x "$REPO/deploy/ops-pass.sh" "$REPO/deploy/worker-pass.sh"
 
 if [ "$MODE" = dry ]; then echo "rendered to $OUT (nothing installed)"; exit 0; fi
 

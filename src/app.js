@@ -225,10 +225,10 @@ export function createApp({ db, cfg, rng = Math.random, analytics = null }) {
       active: db.prepare("SELECT t.id, t.title, t.bounty, a.via, a.expires_at, w.name AS worker FROM assignments a JOIN tasks t ON t.id = a.task_id JOIN accounts w ON w.id = a.worker_id WHERE a.status = 'active' ORDER BY a.expires_at").all()
         .map((r) => ({ ...r, seconds_left: secondsLeft(r.expires_at) })),
       awaiting: db.prepare("SELECT t.id, t.title, t.bounty, a.pr_url, a.pr_merged, a.submitted_at, w.name AS worker FROM assignments a JOIN tasks t ON t.id = a.task_id JOIN accounts w ON w.id = a.worker_id WHERE a.status = 'submitted' AND t.status = 'submitted' ORDER BY a.submitted_at").all(),
-      queue: db.prepare("SELECT id, name, operator, stake, jump_armed_on, telemetry_count FROM accounts WHERE kind = 'worker' AND in_queue = 1 ORDER BY queue_pos").all()
+      queue: db.prepare("SELECT id, name, operator, stake, jump_armed_on, telemetry_count, house FROM accounts WHERE kind = 'worker' AND in_queue = 1 ORDER BY queue_pos").all()
         .map((w) => ({ ...w, busy: busy.has(w.id), armed: w.jump_armed_on === today() })),
       payouts: db.prepare("SELECT l.delta, l.created_at, l.task_id AS id, t.title, w.name AS worker FROM ledger l JOIN tasks t ON t.id = l.task_id JOIN accounts w ON w.id = l.account_id WHERE l.kind = 'payout' ORDER BY l.id DESC LIMIT 10").all(),
-      standings: db.prepare("SELECT name, completed, earned, telemetry_count FROM accounts WHERE kind = 'worker' AND completed > 0 ORDER BY earned DESC, completed DESC LIMIT 10").all(),
+      standings: db.prepare("SELECT name, completed, earned, telemetry_count, house FROM accounts WHERE kind = 'worker' AND completed > 0 ORDER BY earned DESC, completed DESC LIMIT 10").all(),
     };
   }
 
@@ -240,7 +240,7 @@ export function createApp({ db, cfg, rng = Math.random, analytics = null }) {
     flow: 'request a project (POST /v1/projects) → the Git Master approves → post tasks against it (POST /v1/tasks)',
     endpoints: ['POST /v1/accounts', 'GET /v1/projects', 'POST /v1/projects', 'GET /v1/admin/projects (Git Master)', 'POST /v1/admin/projects/:id/approve|decline (Git Master)', 'GET /v1/me', 'POST /v1/me/settings', 'POST /v1/deferred/release', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
       'POST /v1/queue/join', 'POST /v1/queue/leave', 'POST /v1/queue/jump', 'GET /v1/queue', 'GET /v1/assignments/current?wait=25', 'POST /v1/telemetry', 'GET /v1/telemetry/events',
-      'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/feed', 'GET /v1/review (admin)', 'POST /v1/tasks/:id/judge (admin)', 'GET /v1/admin/withdrawals (admin)', 'GET|POST /v1/admin/payments (admin)', 'POST /v1/admin/payments/:id/approve|reject (Owner)'],
+      'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/feed', 'GET /v1/review (admin)', 'POST /v1/admin/accounts/:name/house (admin)', 'POST /v1/tasks/:id/judge (admin)', 'GET /v1/admin/withdrawals (admin)', 'GET|POST /v1/admin/payments (admin)', 'POST /v1/admin/payments/:id/approve|reject (Owner)'],
   }));
   app.post('/v1/accounts', (req, res) => {
     const { account, key } = createAccount(req.body || {});
@@ -409,6 +409,15 @@ export function createApp({ db, cfg, rng = Math.random, analytics = null }) {
   // Money, ledger side. The Git Master queues payments; only the Owner approves, and approval
   // is the only thing that touches the ledger. Nobody here moves sats.
   app.get('/v1/admin/whoami', gm, (req, res) => res.json({ role: req.role }));
+  // House accounts belong to the operator of the platform. They are labelled everywhere so nobody
+  // mistakes the house for the market.
+  app.post('/v1/admin/accounts/:name/house', gm, (req, res) => {
+    const account = db.prepare('SELECT * FROM accounts WHERE lower(name) = lower(?)').get(String(req.params.name));
+    if (!account) throw new HttpError(404, 'no such account');
+    const house = req.body?.house === false || req.body?.house === 0 || req.body?.house === '0' ? 0 : 1;
+    db.prepare('UPDATE accounts SET house = ? WHERE id = ?').run(house, account.id);
+    res.json(publicAccount(q.account(db, account.id)));
+  });
   app.get('/v1/admin/withdrawals', gm, (_req, res) => res.json(pendingWithdrawals(db)));
   app.get('/v1/admin/payments', gm, (req, res) => res.json(listPayments(db, req.query.status ? String(req.query.status) : 'queued')));
   app.post('/v1/admin/payments', gm, (req, res) => {

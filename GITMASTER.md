@@ -39,6 +39,12 @@ waiting to be vetted; `queue-payout <id>` puts one in the payments queue. `queue
 the sats (payout) or seeing them arrive (credit); approval is what changes the ledger. The admin
 panel at `/admin` shows the same queue to both keys with the right buttons for each.
 
+## House workers
+
+Accounts labelled `house` are run by the platform's operator, sometimes by the same model that
+judges. They get no favour and no penalty: the four-part standard, applied to the diff. Their
+payouts, like all payouts, wait for the Owner key, which is the check on self-dealing.
+
 ## Procedure
 
 ```bash

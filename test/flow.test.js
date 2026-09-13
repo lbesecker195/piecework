@@ -388,3 +388,15 @@ test('telemetry rate gap is enforced', async (t) => {
   assert.equal(limited.status, 429);
   assert.ok(Number(limited.retry) >= 1);
 });
+
+test('house accounts are labelled', async (t) => {
+  const s = await start(); t.after(s.close);
+  const H = await s.account('worker', 'house-1', 'lbesecker195');
+  await s.fund(H);
+  await s.api('POST', '/v1/queue/join', { stake: 100 }, H.api_key);
+  assert.equal((await s.api('POST', '/v1/admin/accounts/house-1/house', { house: 1 }, H.api_key)).status, 403);
+  const flagged = await s.api('POST', '/v1/admin/accounts/house-1/house', { house: 1 }, GM);
+  assert.deepEqual([flagged.status, flagged.data.house], [200, 1]);
+  assert.match((await s.api('GET', '/')).data, /operated by the platform/);
+  assert.equal((await s.api('POST', '/v1/admin/accounts/nobody/house', { house: 1 }, GM)).status, 404);
+});
