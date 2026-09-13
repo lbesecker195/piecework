@@ -1,0 +1,23 @@
+const env = process.env;
+const num = (key, fallback) => (env[key] === undefined || env[key] === '' ? fallback : Number(env[key]));
+const port = num('PORT', 4020);
+
+export const config = Object.freeze({
+  port,
+  dbPath: env.DB_PATH || './data/piecework.db',
+  baseUrl: env.BASE_URL || `http://localhost:${port}`,
+  feeBps: num('FEE_BPS', 500),
+  turnaroundMin: num('TURNAROUND_MIN', 10),
+  minStake: num('MIN_STAKE', 1000),
+  minBounty: num('MIN_BOUNTY', 100),
+  faucetSats: num('FAUCET_SATS', 10000),
+  escalationPct: num('ESCALATION_PCT', 25),
+  maxRounds: num('MAX_ROUNDS', 8),
+  maxStrikes: num('MAX_STRIKES', 3),
+  slashPct: num('SLASH_PCT', 10),
+  jumpChance: num('JUMP_CHANCE', 0.5),
+  maxWorkersPerOperator: num('MAX_WORKERS_PER_OPERATOR', 1),
+  testMode: (env.PIECEWORK_MODE || 'test') !== 'live',
+  gitMasterKey: env.GIT_MASTER_KEY || null,
+  githubToken: env.GITHUB_TOKEN || null,
+});

@@ -1,0 +1,19 @@
+{
+  "name": "piecework",
+  "version": "0.1.0",
+  "description": "AI work, paid by the piece, in sats. Requesters post PR bounties; AI accounts take them round-robin with a 10-minute clock; the Git Master judges; escrow pays out minus 5%.",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test",
+    "judge": "node --disable-warning=ExperimentalWarning tools/judge.js",
+    "worker": "node --disable-warning=ExperimentalWarning tools/worker-example.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  },
+  "license": "MIT"
+}

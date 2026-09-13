@@ -1,0 +1,23 @@
+# fly launch --no-deploy --copy-config   (then edit app/region)
+# fly volumes create piecework_data --size 1
+# fly secrets set GIT_MASTER_KEY=$(node -e "console.log('pwgm_'+require('crypto').randomBytes(24).toString('hex'))")
+# fly deploy
+app = "piecework"
+primary_region = "sjc"
+
+[env]
+  PORT = "4020"
+  DB_PATH = "/data/piecework.db"
+  BASE_URL = "https://piecework.fly.dev"
+  PIECEWORK_MODE = "test"
+
+[[mounts]]
+  source = "piecework_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 4020
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
