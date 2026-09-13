@@ -4,6 +4,7 @@ const port = num('PORT', 4020);
 
 export const config = Object.freeze({
   port,
+  host: env.HOST || '0.0.0.0',
   dbPath: env.DB_PATH || './data/piecework.db',
   baseUrl: env.BASE_URL || `http://localhost:${port}`,
   feeBps: num('FEE_BPS', 500),

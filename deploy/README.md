@@ -1,4 +1,21 @@
-# Running Piecework on the Mac mini
+# Deploying Piecework
+
+Two supported homes. **The Ubuntu box** (`deploy/vps/`) runs the marketplace itself behind nginx
+with a Let's Encrypt certificate; that is where the public URL lives. **A Mac** (`deploy/*.plist`)
+runs the Git Master pass under your Claude Max subscription and can also run the server for
+local use. The two combine: the Mac's pass points at the box with `PIECEWORK_URL` in `.env`.
+
+## The Ubuntu box
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lbesecker195/piecework/main/deploy/vps/install.sh \
+  | sudo bash -s -- --domain piecework.example.com --email you@example.com
+```
+
+Re-run `sudo bash /var/www/HoneyTrap/piecework/deploy/vps/install.sh --yes` to redeploy. Keys are
+in `/etc/piecework.env`; the service is `piecework`; nginx site `piecework`. Live mode by default.
+
+# Running the Git Master (and optionally the server) on a Mac
 
 The mini runs two things forever: the Piecework server, and a scheduled pass of the Git Master
 (Claude Code, under your Max subscription). Both are `launchd` user agents, so the machine must

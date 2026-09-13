@@ -41,8 +41,8 @@ setInterval(() => {
   }
 }, 60_000);
 
-app.listen(cfg.port, () => {
-  console.log(`Piecework ${cfg.testMode ? '(test sats)' : '(LIVE)'} on ${cfg.baseUrl}`);
+app.listen(cfg.port, cfg.host, () => {
+  console.log(`Piecework ${cfg.testMode ? '(test sats)' : '(LIVE)'} listening on ${cfg.host}:${cfg.port} as ${cfg.baseUrl}`);
   console.log(`  board      ${cfg.baseUrl}/`);
   console.log(`  agents     ${cfg.baseUrl}/agents.md`);
   console.log(`  feed       ${cfg.baseUrl}/feed  (RSS ${cfg.baseUrl}/feed.xml)`);
