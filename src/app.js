@@ -180,7 +180,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
     max_workers_per_operator: cfg.maxWorkersPerOperator,
     endpoints: ['POST /v1/accounts', 'GET /v1/me', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
       'POST /v1/queue/join', 'POST /v1/queue/leave', 'POST /v1/queue/jump', 'GET /v1/queue', 'GET /v1/assignments/current?wait=25',
-      'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/review (Git Master)', 'POST /v1/tasks/:id/judge (Git Master)'],
+      'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/review (Git Master)', 'POST /v1/tasks/:id/judge (Git Master)', 'POST /v1/admin/credit (Git Master)', 'GET /v1/admin/withdrawals (Git Master)', 'POST /v1/admin/withdrawals/:id/paid (Git Master)'],
   }));
   app.post('/v1/accounts', (req, res) => {
     const { account, key } = createAccount(req.body || {});
@@ -194,9 +194,13 @@ export function createApp({ db, cfg, rng = Math.random }) {
   app.get('/v1/ledger', auth(), (req, res) => res.json(db.prepare('SELECT * FROM ledger WHERE account_id = ? ORDER BY id DESC LIMIT 200').all(req.account.id)));
   app.post('/v1/withdraw', auth(), (req, res) => {
     const amount = positiveInt(req.body?.sats, 'sats');
-    if (!cfg.testMode) throw new HttpError(501, 'live payouts are not wired yet');
-    move(db, req.account.id, -amount, 'withdrawal', null, 'test mode: recorded, nothing was paid');
-    res.json({ status: 'recorded', sats: amount, note: 'test mode: no real payment was made', balance: q.account(db, req.account.id).balance });
+    if (!cfg.testMode && !req.account.payout_address) throw new HttpError(400, 'set payout_address on your account first');
+    const memo = cfg.testMode ? 'test mode: recorded, nothing was paid' : 'pending manual payout';
+    move(db, req.account.id, -amount, 'withdrawal', null, memo);
+    res.json({
+      status: cfg.testMode ? 'recorded' : 'pending', sats: amount, balance: q.account(db, req.account.id).balance,
+      note: cfg.testMode ? 'test mode: no real payment was made' : 'the operator pays withdrawals by hand to your payout_address, normally within a day',
+    });
   });
 
   app.post('/v1/tasks', auth('requester'), (req, res) => res.status(201).json(taskView(createTask(req.account, req.body || {}))));
@@ -266,6 +270,27 @@ export function createApp({ db, cfg, rng = Math.random }) {
   });
   // Exposed for tests and operators; the server also runs it on a timer.
   app.post('/v1/admin/dispatch', gm, (_req, res) => res.json({ assigned: dispatch(db, cfg, rng) }));
+
+  // Manual money. Live mode runs with no custody software: the operator credits a requester
+  // after a Lightning payment lands in the operator's own wallet, and pays withdrawals by hand.
+  app.post('/v1/admin/credit', gm, (req, res) => {
+    const name = requireString(req.body?.account, 'account', { max: 40 });
+    const account = db.prepare('SELECT * FROM accounts WHERE lower(name) = lower(?)').get(name);
+    if (!account) throw new HttpError(404, 'no such account');
+    const sats = positiveInt(req.body?.sats, 'sats');
+    move(db, account.id, sats, 'deposit', null, req.body?.memo ? String(req.body.memo).slice(0, 200) : 'manual deposit');
+    res.json(publicAccount(q.account(db, account.id)));
+  });
+  app.get('/v1/admin/withdrawals', gm, (_req, res) => res.json(db.prepare(
+    "SELECT l.id, a.name, a.payout_address, -l.delta AS sats, l.memo, l.created_at FROM ledger l JOIN accounts a ON a.id = l.account_id WHERE l.kind = 'withdrawal' ORDER BY l.id DESC LIMIT 200",
+  ).all()));
+  app.post('/v1/admin/withdrawals/:id/paid', gm, (req, res) => {
+    const row = db.prepare("SELECT * FROM ledger WHERE id = ? AND kind = 'withdrawal'").get(Number(req.params.id));
+    if (!row) throw new HttpError(404, 'no such withdrawal');
+    const memo = `paid ${nowIso()}${req.body?.ref ? ` · ${String(req.body.ref).slice(0, 120)}` : ''}`;
+    db.prepare('UPDATE ledger SET memo = ? WHERE id = ?').run(memo, row.id);
+    res.json({ id: row.id, sats: -row.delta, memo });
+  });
 
   // ------------------------------------------------------------------ HTML
   app.get('/agents.md', (_req, res) => res.type('text/markdown').send(readFileSync(joinPath(ROOT, 'AGENTS.md'), 'utf8')));

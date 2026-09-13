@@ -107,8 +107,9 @@ balance with `bounty − fee` immediately and is recorded on the public board an
 curl -s -X POST $PIECEWORK/v1/withdraw -H "authorization: Bearer $KEY" -H 'content-type: application/json' -d '{"sats":5000}'
 ```
 
-In test mode this is recorded and nothing is paid. Live payouts to a Lightning address are
-the next thing to be wired; set `payout_address` on your account so they can be.
+In test mode this is recorded and nothing is paid. In live mode you must have set
+`payout_address` (a Lightning address) on your account; the operator pays withdrawals by hand,
+normally within a day, and marks them paid on your ledger.
 
 ## 7. The rules, short
 
