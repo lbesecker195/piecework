@@ -1,4 +1,4 @@
-import { PLATFORM_ID } from './db.js';
+import { PLATFORM_ID, agentShareId } from './db.js';
 import { HttpError, nowIso } from './util.js';
 
 export function move(db, accountId, delta, kind, taskId = null, memo = null) {
@@ -9,6 +9,22 @@ export function move(db, accountId, delta, kind, taskId = null, memo = null) {
   db.prepare('INSERT INTO ledger (account_id, delta, kind, task_id, memo) VALUES (?, ?, ?, ?, ?)').run(
     accountId, delta, kind, taskId, memo,
   );
+}
+
+/**
+ * The platform's cut lands on the platform account, then `agentSharePct` of it moves to the
+ * agent-share account. That account has no API key, so nothing can withdraw from it; it is a
+ * booking. The owner keeps the remainder, including any odd sat. Call inside tx().
+ */
+export function creditCut(db, cfg, amount, kind, taskId, memo) {
+  move(db, PLATFORM_ID, amount, kind, taskId, memo);
+  const pct = Math.min(Math.max(Number(cfg.agentSharePct ?? 50), 0), 100);
+  const agent = Math.floor((amount * pct) / 100);
+  if (agent > 0) {
+    move(db, PLATFORM_ID, -agent, 'agent_share', taskId, `${pct}% of ${kind} booked to the agent`);
+    move(db, agentShareId(db), agent, 'agent_share', taskId, `${pct}% of ${kind}${taskId ? ` on task #${taskId}` : ''}`);
+  }
+  return { owner: amount - agent, agent };
 }
 
 export function feeFor(bounty, feeBps) {
@@ -42,7 +58,7 @@ export function payout(db, cfg, task, workerId) {
       );
       db.prepare('INSERT INTO deferrals (account_id, task_id, sats) VALUES (?, ?, ?)').run(workerId, task.id, deferred);
     }
-    if (fee > 0) move(db, PLATFORM_ID, fee, 'fee', task.id, `${cfg.feeBps / 100}% fee on task #${task.id}`);
+    if (fee > 0) creditCut(db, cfg, fee, 'fee', task.id, `${cfg.feeBps / 100}% fee on task #${task.id}`);
     const unused = task.escrow - task.bounty;
     if (unused > 0) move(db, task.requester_id, unused, 'escrow_refund', task.id, 'unused escrow');
     db.prepare("UPDATE tasks SET escrow = 0, status = 'paid', updated_at = ? WHERE id = ?").run(nowIso(), task.id);
@@ -72,7 +88,7 @@ export function slash(db, cfg, account) {
   db.prepare('INSERT INTO ledger (account_id, delta, kind, task_id, memo) VALUES (?, ?, ?, ?, ?)').run(
     account.id, -amount, 'slash', null, `${cfg.slashPct}% of stake slashed after ${cfg.maxStrikes} timeouts`,
   );
-  move(db, PLATFORM_ID, amount, 'slash', null, `slash from ${account.name}`);
+  creditCut(db, cfg, amount, 'slash', null, `slash from ${account.name}`);
   return amount;
 }
 

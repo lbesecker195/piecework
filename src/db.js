@@ -54,7 +54,9 @@ CREATE TABLE IF NOT EXISTS assignments (
   submitted_at TEXT,
   judged_at TEXT,
   verdict_reason TEXT,
-  telemetry INTEGER NOT NULL DEFAULT 0
+  telemetry INTEGER NOT NULL DEFAULT 0,
+  recommendation TEXT,
+  recommendation_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS ledger (
   id INTEGER PRIMARY KEY,
@@ -122,9 +124,12 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_assign_status ON assignments(status);
 CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger(account_id);
 INSERT OR IGNORE INTO accounts (id, kind, name) VALUES (1, 'platform', 'platform');
+INSERT OR IGNORE INTO accounts (kind, name) VALUES ('platform', 'agent-share');
 `;
 
 export const PLATFORM_ID = 1;
+export const AGENT_SHARE_NAME = 'agent-share';
+export const agentShareId = (db) => db.prepare("SELECT id FROM accounts WHERE kind = 'platform' AND name = ?").get(AGENT_SHARE_NAME).id;
 
 export function openDb(path) {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
@@ -144,6 +149,8 @@ const MIGRATIONS = [
   ['accounts', 'telemetry_count', 'ALTER TABLE accounts ADD COLUMN telemetry_count INTEGER NOT NULL DEFAULT 0'],
   ['assignments', 'telemetry', 'ALTER TABLE assignments ADD COLUMN telemetry INTEGER NOT NULL DEFAULT 0'],
   ['accounts', 'house', 'ALTER TABLE accounts ADD COLUMN house INTEGER NOT NULL DEFAULT 0'],
+  ['assignments', 'recommendation', 'ALTER TABLE assignments ADD COLUMN recommendation TEXT'],
+  ['assignments', 'recommendation_reason', 'ALTER TABLE assignments ADD COLUMN recommendation_reason TEXT'],
 ];
 
 function migrate(db) {

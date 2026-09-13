@@ -7,6 +7,7 @@
  *   ops.js review                          pull requests awaiting judgment (task text + PR URL)
  *   ops.js accept <taskId> [reason]        pay the worker, refund unused escrow
  *   ops.js reject <taskId> <reason>        escalate and reopen
+ *   ops.js recommend <taskId> accept|reject <reason>   house work: advise the Owner, who decides
  *   ops.js projects                        integration requests awaiting a yes
  *   ops.js approve <projectId> [reason]    "yes, this project is in"
  *   ops.js decline <projectId> <reason>
@@ -67,13 +68,15 @@ const commands = {
     const [review, projects, withdrawals] = await Promise.all([
       call('GET', '/v1/review'), call('GET', '/v1/admin/projects?status=pending'), call('GET', '/v1/admin/withdrawals'),
     ]);
-    console.log(review.length + projects.length + withdrawals.filter((w) => !w.payment_id).length);
+    // House work that already carries a recommendation is waiting on the Owner, not on us.
+    const actionable = review.filter((r) => !(r.worker_house && r.recommendation)).length;
+    console.log(actionable + projects.length + withdrawals.filter((w) => !w.payment_id).length);
   },
   async review() {
     const items = await call('GET', '/v1/review');
     if (!items.length) return console.log('nothing awaiting judgment');
     for (const a of items) {
-      console.log(`#${a.id}  ${a.title}  [${a.repo}]  ${a.bounty} sats  round ${a.rounds + 1}`);
+      console.log(`#${a.id}  ${a.title}  [${a.repo}]  ${a.bounty} sats  round ${a.rounds + 1}${a.worker_house ? '  [HOUSE: the Owner decides; recommend only]' : ''}${a.recommendation ? `  (recommended: ${a.recommendation})` : ''}`);
       console.log(`    worker ${a.worker}${a.worker_github ? ` (@${a.worker_github})` : ''}  submitted ${a.submitted_at}`);
       console.log(`    ${a.pr_url}${a.pr_state ? `  (${a.pr_state}${a.pr_merged ? ', merged' : ''})` : ''}`);
       console.log(`    ---\n${indent(a.body)}\n`);
@@ -88,6 +91,14 @@ const commands = {
     need(id, 'task id'); need(tail, 'a reason');
     const r = await call('POST', `/v1/tasks/${id}/judge`, { verdict: 'reject', reason: tail });
     console.log(`rejected #${id}: task is now ${r.status}${r.status === 'open' ? `, bounty ${r.bounty}` : ''}, round ${r.rounds}`);
+  },
+  async recommend() {
+    const [verdict, ...why] = rest;
+    need(id, 'task id');
+    if (!['accept', 'reject'].includes(verdict)) { console.error('verdict must be accept or reject'); process.exit(2); }
+    need(why.join(' '), 'a reason');
+    await call('POST', `/v1/tasks/${id}/recommend`, { verdict, reason: why.join(' ') });
+    console.log(`recommended ${verdict} on #${id}; awaiting the Owner`);
   },
   async projects() {
     const items = await call('GET', '/v1/admin/projects?status=pending');

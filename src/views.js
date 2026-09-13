@@ -216,6 +216,17 @@ export function rss(events, baseUrl) {
 export function admin(d, ctx) {
   const owner = ctx.role === 'owner';
   const roleTag = owner ? '<span class="tag ok">Owner</span>' : '<span class="tag acc">Git Master</span>';
+  const judgeControls = (a) => {
+    const rec = a.recommendation
+      ? `<p><span class="tag ${a.recommendation === 'accept' ? 'ok' : 'bad'}">Git Master recommends ${h(a.recommendation)}</span> <span class="muted">${h(a.recommendation_reason || '')}</span></p>`
+      : '';
+    const judgeForm = `<form method="post" action="/admin/judge/${a.id}"><label>Reason (shown to the worker and on the task page)</label><input name="reason" maxlength="500" placeholder="Does what the task asked; tests included." value="${h(a.recommendation_reason || '')}">
+<button name="verdict" value="accept">Accept and pay ${sats(a.bounty)}</button> <button name="verdict" value="reject" class="bad">Reject and escalate</button></form>`;
+    if (!a.worker_house) return judgeForm;
+    if (owner) return `<p><span class="tag warn">house work · your verdict</span></p>${rec}${judgeForm}`;
+    return `<p><span class="tag warn">house work · the Owner decides</span></p>${rec}<form method="post" action="/admin/recommend/${a.id}"><label>Recommendation for the Owner</label><input name="reason" maxlength="500" required placeholder="What the diff does against the task text." value="${h(a.recommendation_reason || '')}">
+<button name="verdict" value="accept" class="ghost">Recommend accept</button> <button name="verdict" value="reject" class="ghost">Recommend reject</button></form>`;
+  };
   const paymentRow = (p) => `<tr><td>#${p.id}</td><td><span class="tag ${p.kind === 'credit' ? 'ok' : 'warn'}">${h(p.kind)}</span></td><td>${h(p.name)}</td><td class="num">${sats(p.sats)}</td><td class="muted">${p.kind === 'payout' ? (p.address ? `<code>${h(p.address)}</code>` : '<span class="tag bad">no address</span>') : h(p.memo || '')}</td><td class="muted">${h(p.proposed_by)} ${ago(p.created_at)}</td><td>${p.status === 'queued'
     ? (owner ? `<form method="post" action="/admin/payments/${p.id}/approve" class="inline"><input name="ref" placeholder="${p.kind === 'payout' ? 'payment hash (after you sent it)' : 'invoice / txid'}" style="width:220px"><button>${p.kind === 'payout' ? 'Sent it · mark paid' : 'Received · credit'}</button></form>
        <form method="post" action="/admin/payments/${p.id}/reject" class="inline"><input name="reason" placeholder="reason" style="width:140px"><button class="ghost">Reject</button></form>` : '<span class="muted">awaiting the Owner</span>')
@@ -223,7 +234,7 @@ export function admin(d, ctx) {
   const body = `
 <h1>Admin ${roleTag} ${d.testMode ? '<span class="tag warn">test sats</span>' : '<span class="tag bad">LIVE</span>'}</h1>
 <p class="muted">Two keys, two jobs. The <b>Git Master</b> judges pull requests, says yes or no to projects, and queues payments. The <b>Owner</b> approves or rejects each queued payment; approval is the only thing that moves the ledger, and the sats themselves move from the Owner's wallet.</p>
-<div class="grid">${[['Open bounties', d.stats.open], ['In progress', d.stats.active], ['Awaiting judgment', d.review.length], ['Projects to decide', d.projects.length], ['Payments queued', d.queued.length], ['Escrow', d.stats.escrow.toLocaleString('en-US')], ['Fees earned', d.stats.fees.toLocaleString('en-US')]].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('')}</div>
+<div class="grid">${[['Open bounties', d.stats.open], ['In progress', d.stats.active], ['Awaiting judgment', d.review.length], ['Projects to decide', d.projects.length], ['Payments queued', d.queued.length], ['Escrow', d.stats.escrow.toLocaleString('en-US')], ['Platform cut', d.stats.fees.toLocaleString('en-US')], ['Owner share', Number(d.stats.owner_share).toLocaleString('en-US')], ['Agent share', Number(d.stats.agent_share).toLocaleString('en-US')]].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('')}</div>
 
 <h2>Payments queue ${owner ? '· your approval moves the ledger' : '· awaiting the Owner'}</h2>
 ${d.queued.length ? `<table><tr><th>#</th><th>Kind</th><th>Account</th><th class="num">Sats</th><th>Address / memo</th><th>Queued by</th><th>Decision</th></tr>${d.queued.map(paymentRow).join('')}</table>` : '<div class="empty">Nothing queued.</div>'}
@@ -243,8 +254,7 @@ ${d.projects.length ? d.projects.map((p) => `<div class="card"><b><a href="https
 ${d.review.length ? d.review.map((a) => `<div class="card"><b><a href="/tasks/${a.id}">#${a.id} ${h(a.title)}</a></b> · <a href="https://github.com/${h(a.repo)}" rel="noopener">${h(a.repo)}</a> · bounty <b>${sats(a.bounty)}</b> · round ${a.rounds + 1} · worker <b>${h(a.worker)}</b>${a.worker_github ? ` (<a href="https://github.com/${h(a.worker_github)}" rel="noopener">@${h(a.worker_github)}</a>)` : ''}${a.reporting ? ' <span class="tag ok">📡 reporting · judge first</span>' : ''} · submitted ${ago(a.submitted_at)}
 <p><a href="${h(a.pr_url)}" rel="noopener">${h(a.pr_url)}</a> ${a.pr_state ? `<span class="tag">${h(a.pr_state)}</span>` : ''}${a.pr_merged ? ' <span class="tag ok">merged</span>' : ''}</p>
 <details><summary>Task text</summary><pre style="white-space:pre-wrap">${h(a.body)}</pre></details>
-<form method="post" action="/admin/judge/${a.id}"><label>Reason (shown to the worker and on the task page)</label><input name="reason" maxlength="500" placeholder="Does what the task asked; tests included.">
-<button name="verdict" value="accept">Accept and pay ${sats(a.bounty)}</button> <button name="verdict" value="reject" class="bad">Reject and escalate</button></form></div>`).join('') : '<div class="empty">Nothing to judge.</div>'}
+${judgeControls(a)}</div>`).join('') : '<div class="empty">Nothing to judge.</div>'}
 
 <h2>Payment history</h2>
 ${d.history.length ? `<table><tr><th>#</th><th>Kind</th><th>Account</th><th class="num">Sats</th><th>Address / memo</th><th>Queued by</th><th>Outcome</th></tr>${d.history.map(paymentRow).join('')}</table>` : '<div class="empty">None yet.</div>'}

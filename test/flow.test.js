@@ -84,9 +84,10 @@ test('happy path: post, round-robin dispatch, submit, accept, payout minus fee, 
   assert.equal(meA.completed, 1);
   assert.equal(meA.earned, 950);
   assert.equal((await s.api('GET', '/v1/me', null, R.api_key)).data.balance, 9000);
-  assert.equal(q.account(s.db, 1).balance, 50);
+  assert.equal(q.account(s.db, 1).balance, 25);
   const stats = (await s.api('GET', '/v1/stats')).data;
   assert.deepEqual([stats.paid, stats.fees, stats.escrow, stats.paid_tasks], [950, 50, 0, 1]);
+  assert.deepEqual([stats.owner_share, stats.agent_share], [25, 25]);
   assert.equal((await s.api('POST', `/v1/tasks/${task.id}/judge`, { verdict: 'accept' }, GM)).status, 409);
 });
 
@@ -163,7 +164,8 @@ test('one queue seat per operator, cancel refunds, three timeouts eject and slas
   assert.deepEqual(bounties, [1250, 1563, 1954]);
   const c = (await s.api('GET', '/v1/me', null, C.api_key)).data;
   assert.deepEqual([c.in_queue, c.stake, c.balance, c.strikes], [0, 0, 9900, 0]);
-  assert.equal(q.account(s.db, 1).balance, 100);
+  assert.equal(q.account(s.db, 1).balance, 50);
+  assert.equal((await s.api('GET', '/v1/stats')).data.agent_share, 50);
   assert.deepEqual(dispatch(s.db, cfg, () => 0.99), []);
 });
 
@@ -399,4 +401,40 @@ test('house accounts are labelled', async (t) => {
   assert.deepEqual([flagged.status, flagged.data.house], [200, 1]);
   assert.match((await s.api('GET', '/')).data, /operated by the platform/);
   assert.equal((await s.api('POST', '/v1/admin/accounts/nobody/house', { house: 1 }, GM)).status, 404);
+});
+
+test('house work: the Git Master recommends, only the Owner judges; the cut splits with the odd sat to the owner', async (t) => {
+  const s = await start(); t.after(s.close);
+  assert.equal((await s.api('POST', '/v1/accounts', { kind: 'requester', name: 'agent-share' })).status, 409);
+  assert.equal(s.db.prepare("SELECT key_hash FROM accounts WHERE name = 'agent-share'").get().key_hash, null);
+  const R = await s.account('requester', 'ada');
+  const H = await s.account('worker', 'house-1', 'lbesecker195');
+  await s.fund(R); await s.fund(H);
+  await s.api('POST', '/v1/admin/accounts/house-1/house', { house: 1 }, GM);
+  await s.api('POST', '/v1/queue/join', { stake: 100 }, H.api_key);
+  const task = await s.post(R, 1030);
+  dispatch(s.db, cfg, () => 0.99);
+  const cur = (await s.api('GET', '/v1/assignments/current', null, H.api_key)).data;
+  await s.api('POST', cur.submit.url, { pr_url: `${REPO}/pull/5` }, H.api_key);
+
+  let review = (await s.api('GET', '/v1/review', null, GM)).data;
+  assert.deepEqual([review[0].worker_house, review[0].recommendation], [1, null]);
+  const refused = await s.api('POST', `/v1/tasks/${task.id}/judge`, { verdict: 'accept' }, GM);
+  assert.equal(refused.status, 403);
+  assert.match(refused.data.error, /Owner judges/);
+  assert.equal((await s.api('POST', `/v1/tasks/${task.id}/recommend`, { verdict: 'accept' }, GM)).status, 400);
+  assert.equal((await s.api('POST', `/v1/tasks/${task.id}/recommend`, { verdict: 'accept', reason: 'x' }, H.api_key)).status, 403);
+  assert.equal((await s.api('POST', `/v1/tasks/${task.id}/recommend`, { verdict: 'accept', reason: 'matches the task text' }, GM)).status, 200);
+  review = (await s.api('GET', '/v1/review', null, GM)).data;
+  assert.deepEqual([review[0].recommendation, review[0].recommendation_reason], ['accept', 'matches the task text']);
+  assert.match((await s.api('GET', '/admin', null, GM)).data, /the Owner decides/);
+  assert.match((await s.api('GET', '/admin', null, OWNER)).data, /your verdict/);
+
+  const verdict = await s.api('POST', `/v1/tasks/${task.id}/judge`, { verdict: 'accept', reason: 'matches the task text' }, OWNER);
+  assert.equal(verdict.status, 200);
+  // fee = floor(1030 * 5%) = 51; agent = floor(51 / 2) = 25; owner keeps 26.
+  const stats = (await s.api('GET', '/v1/stats')).data;
+  assert.deepEqual([stats.fees, stats.owner_share, stats.agent_share], [51, 26, 25]);
+  assert.equal(stats.fees, stats.owner_share + stats.agent_share);
+  assert.equal((await s.api('GET', '/v1/me', null, H.api_key)).data.earned, 979);
 });

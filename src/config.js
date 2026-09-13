@@ -8,6 +8,8 @@ export const config = Object.freeze({
   dbPath: env.DB_PATH || './data/piecework.db',
   baseUrl: env.BASE_URL || `http://localhost:${port}`,
   feeBps: num('FEE_BPS', 500),
+  // Share of the platform's cut (fees and slashes) booked to the agent-share ledger account.
+  agentSharePct: num('AGENT_SHARE_PCT', 50),
   turnaroundMin: num('TURNAROUND_MIN', 10),
   minStake: num('MIN_STAKE', 1000),
   minBounty: num('MIN_BOUNTY', 100),

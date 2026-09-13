@@ -170,6 +170,25 @@ export function createApp({ db, cfg, rng = Math.random, analytics = null }) {
 
   const nameOf = (id) => q.account(db, id)?.name || '?';
 
+  // House work may be done by the same model that judges, and the verdict moves money. So the
+  // Git Master recommends and the Owner decides; enforced here, not by convention.
+  function assertCanJudge(task, role) {
+    const assignment = q.latestAssignmentForTask(db, task.id);
+    const worker = assignment ? q.account(db, assignment.worker_id) : null;
+    if (worker && worker.house && role !== 'owner') {
+      throw new HttpError(403, `${worker.name} is a house account: the Owner judges its work. Post a recommendation with POST /v1/tasks/${task.id}/recommend`);
+    }
+  }
+
+  function recommend(task, verdict, reason) {
+    if (task.status !== 'submitted') throw new HttpError(409, `task is ${task.status}, not awaiting judgment`);
+    if (!['accept', 'reject'].includes(verdict)) throw new HttpError(400, "verdict must be 'accept' or 'reject'");
+    const text = requireString(reason, 'reason', { max: 500 });
+    const assignment = q.latestAssignmentForTask(db, task.id);
+    db.prepare('UPDATE assignments SET recommendation = ?, recommendation_reason = ? WHERE id = ?').run(verdict, text, assignment.id);
+    return { task: task.id, recommendation: verdict, reason: text };
+  }
+
   function taskView(task) {
     const assignments = db.prepare('SELECT * FROM assignments WHERE task_id = ? ORDER BY id').all(task.id).map((a) => ({
       id: a.id, worker: nameOf(a.worker_id), via: a.via, status: a.status, assigned_at: a.assigned_at, expires_at: a.expires_at,
@@ -194,7 +213,8 @@ export function createApp({ db, cfg, rng = Math.random, analytics = null }) {
   function reviewQueue() {
     return db.prepare(`
       SELECT t.id, t.repo, t.title, t.body, t.bounty, t.rounds, a.id AS assignment_id, a.pr_url, a.pr_state, a.pr_merged, a.submitted_at,
-             (a.telemetry >= ${REPORTING_THRESHOLD}) AS reporting, w.name AS worker, w.github AS worker_github
+             (a.telemetry >= ${REPORTING_THRESHOLD}) AS reporting, a.recommendation, a.recommendation_reason,
+             w.name AS worker, w.github AS worker_github, w.house AS worker_house
       FROM tasks t JOIN assignments a ON a.task_id = t.id AND a.status = 'submitted' JOIN accounts w ON w.id = a.worker_id
       WHERE t.status = 'submitted' ORDER BY (a.telemetry >= ${REPORTING_THRESHOLD}) DESC, a.submitted_at`).all();
   }
@@ -207,7 +227,9 @@ export function createApp({ db, cfg, rng = Math.random, analytics = null }) {
       (SELECT COUNT(*) FROM tasks WHERE status = 'paid') AS paid_tasks,
       (SELECT COALESCE(SUM(escrow), 0) FROM tasks) AS escrow,
       (SELECT COALESCE(SUM(delta), 0) FROM ledger WHERE kind = 'payout') AS paid,
-      (SELECT balance FROM accounts WHERE id = ${PLATFORM_ID}) AS fees,
+      (SELECT COALESCE(SUM(delta), 0) FROM ledger WHERE account_id = ${PLATFORM_ID} AND kind IN ('fee', 'slash')) AS fees,
+      (SELECT balance FROM accounts WHERE id = ${PLATFORM_ID}) AS owner_share,
+      (SELECT balance FROM accounts WHERE kind = 'platform' AND name = 'agent-share') AS agent_share,
       (SELECT COUNT(*) FROM accounts WHERE kind = 'worker' AND in_queue = 1) AS queued,
       (SELECT COUNT(*) FROM accounts WHERE kind = 'worker') AS workers,
       (SELECT COUNT(*) FROM accounts WHERE kind = 'requester') AS requesters`).get();
@@ -237,10 +259,11 @@ export function createApp({ db, cfg, rng = Math.random, analytics = null }) {
     name: 'piecework', mode: cfg.testMode ? 'test' : 'live', fee_bps: cfg.feeBps, turnaround_min: cfg.turnaroundMin, min_stake: cfg.minStake, min_bounty: cfg.minBounty,
     docs: `${cfg.baseUrl}/agents.md`,
     max_workers_per_operator: cfg.maxWorkersPerOperator,
+    agent_share_pct: cfg.agentSharePct,
     flow: 'request a project (POST /v1/projects) → the Git Master approves → post tasks against it (POST /v1/tasks)',
     endpoints: ['POST /v1/accounts', 'GET /v1/projects', 'POST /v1/projects', 'GET /v1/admin/projects (Git Master)', 'POST /v1/admin/projects/:id/approve|decline (Git Master)', 'GET /v1/me', 'POST /v1/me/settings', 'POST /v1/deferred/release', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
       'POST /v1/queue/join', 'POST /v1/queue/leave', 'POST /v1/queue/jump', 'GET /v1/queue', 'GET /v1/assignments/current?wait=25', 'POST /v1/telemetry', 'GET /v1/telemetry/events',
-      'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/feed', 'GET /v1/review (admin)', 'POST /v1/admin/accounts/:name/house (admin)', 'POST /v1/tasks/:id/judge (admin)', 'GET /v1/admin/withdrawals (admin)', 'GET|POST /v1/admin/payments (admin)', 'POST /v1/admin/payments/:id/approve|reject (Owner)'],
+      'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/feed', 'GET /v1/review (admin)', 'POST /v1/admin/accounts/:name/house (admin)', 'POST /v1/tasks/:id/judge (admin; Owner for house work)', 'POST /v1/tasks/:id/recommend (admin)', 'GET /v1/admin/withdrawals (admin)', 'GET|POST /v1/admin/payments (admin)', 'POST /v1/admin/payments/:id/approve|reject (Owner)'],
   }));
   app.post('/v1/accounts', (req, res) => {
     const { account, key } = createAccount(req.body || {});
@@ -396,9 +419,15 @@ export function createApp({ db, cfg, rng = Math.random, analytics = null }) {
 
   app.get('/v1/stats', (_req, res) => res.json(stats()));
   app.get('/v1/review', gm, (_req, res) => res.json(reviewQueue()));
+  app.post('/v1/tasks/:id/recommend', gm, (req, res) => {
+    const task = q.task(db, Number(req.params.id));
+    if (!task) throw new HttpError(404, 'no such task');
+    res.json(recommend(task, req.body?.verdict, req.body?.reason));
+  });
   app.post('/v1/tasks/:id/judge', gm, (req, res) => {
     const task = q.task(db, Number(req.params.id));
     if (!task) throw new HttpError(404, 'no such task');
+    assertCanJudge(task, req.role);
     const reason = req.body?.reason ? String(req.body.reason).slice(0, 500) : null;
     const result = judge(db, cfg, task, req.body?.verdict, reason, (t, w) => payout(db, cfg, t, w));
     res.json({ ...result, task: taskView(q.task(db, task.id)) });
@@ -574,9 +603,15 @@ export function createApp({ db, cfg, rng = Math.random, analytics = null }) {
   app.post('/admin/payments/queue-credit', adminAction(['gitmaster', 'owner'], (req, role) => queueCredit(db, requireString(req.body.account, 'account', { max: 40 }), positiveInt(req.body.sats, 'sats'), req.body.memo ? String(req.body.memo).slice(0, 200) : null, role)));
   app.post('/admin/payments/:id/approve', adminAction(['owner'], (req, role) => tx(db, () => approvePayment(db, paymentOr404(req), role, req.body.ref))));
   app.post('/admin/payments/:id/reject', adminAction(['owner'], (req, role) => tx(db, () => rejectPayment(db, paymentOr404(req), role, req.body.reason))));
-  app.post('/admin/judge/:id', adminAction(['gitmaster', 'owner'], (req) => {
+  app.post('/admin/recommend/:id', adminAction(['gitmaster', 'owner'], (req) => {
     const task = q.task(db, Number(req.params.id));
     if (!task) throw new HttpError(404, 'no such task');
+    recommend(task, req.body.verdict, req.body.reason);
+  }));
+  app.post('/admin/judge/:id', adminAction(['gitmaster', 'owner'], (req, role) => {
+    const task = q.task(db, Number(req.params.id));
+    if (!task) throw new HttpError(404, 'no such task');
+    assertCanJudge(task, role);
     judge(db, cfg, task, req.body.verdict, req.body.reason ? String(req.body.reason).slice(0, 500) : null, (t, w) => payout(db, cfg, t, w));
   }));
 

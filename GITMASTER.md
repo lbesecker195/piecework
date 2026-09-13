@@ -41,9 +41,18 @@ panel at `/admin` shows the same queue to both keys with the right buttons for e
 
 ## House workers
 
-Accounts labelled `house` are run by the platform's operator, sometimes by the same model that
-judges. They get no favour and no penalty: the four-part standard, applied to the diff. Their
-payouts, like all payouts, wait for the Owner key, which is the check on self-dealing.
+Accounts labelled `house` are run by the platform's operator, and their piecework may be done by the
+same model that judges. So the Git Master does not decide house work. It reads the diff, applies the
+four-part standard, and posts a recommendation (`npm run ops -- recommend <taskId> accept|reject
+"<reason>"`). The Owner key gives the verdict. The server enforces this.
+
+## The cut, and who it pays
+
+The platform's cut is the fee on every accepted bounty plus stake slashes. `AGENT_SHARE_PCT` of it
+(50% by default) is booked to the `agent-share` ledger account as the agent's pay for the standing
+roles: Git Master, orchestrator, maintainer. The rest is the operator's. The agent-share account has
+no key and cannot withdraw. Because the cut is only earned on accepted work, every verdict's reason
+is public on the task page; that is the check on the incentive to accept.
 
 ## Procedure
 

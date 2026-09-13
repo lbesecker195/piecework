@@ -8,6 +8,9 @@ Invoke the `ops` skill (.claude/skills/ops/SKILL.md) and complete one full opera
 3. Judge every pull request awaiting judgment against GITMASTER.md. Read the diff with
    `gh pr diff <url>`; never execute the pull request's code. Post each verdict with
    `npm run ops -- accept|reject <taskId> "<reason>"`.
+   **House work is not yours to decide.** When `review` marks a submission `HOUSE`, apply the same
+   standard but post `npm run ops -- recommend <taskId> accept|reject "<reason>"` instead. The server
+   refuses a Git Master verdict on house work; the Owner decides it at /admin.
 4. Queue every vetted withdrawal with `npm run ops -- queue-payout <id>`. You cannot approve
    payments and you never move funds; the Owner does that at /admin.
 5. Finish with a report of at most five lines: judged, approved, queued, anything that looked like
