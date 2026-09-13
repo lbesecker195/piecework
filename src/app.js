@@ -53,9 +53,38 @@ export function createApp({ db, cfg, rng = Math.random }) {
     return q.account(db, account.id).balance;
   }
 
+  function requestProject(account, body) {
+    const repo = parseRepo(body.repo_url);
+    if (!repo) throw new HttpError(400, 'repo_url must be a public GitHub repository URL like https://github.com/owner/name');
+    const description = requireString(body.description, 'description', { max: 4000 });
+    const existing = q.projectByRepo(db, repo);
+    if (existing && existing.status !== 'declined') throw new HttpError(409, `${repo} is already ${existing.status}`);
+    if (existing) db.prepare('DELETE FROM projects WHERE id = ?').run(existing.id);
+    const info = db.prepare("INSERT INTO projects (requester_id, repo, description, status) VALUES (?, ?, ?, 'pending')").run(account.id, repo, description);
+    return q.project(db, Number(info.lastInsertRowid));
+  }
+
+  function decideProject(project, decision, reason) {
+    if (!['approve', 'decline'].includes(decision)) throw new HttpError(400, "decision must be 'approve' or 'decline'");
+    if (project.status !== 'pending') throw new HttpError(409, `project is already ${project.status}`);
+    db.prepare('UPDATE projects SET status = ?, reason = ?, decided_at = ? WHERE id = ?')
+      .run(decision === 'approve' ? 'approved' : 'declined', reason || null, nowIso(), project.id);
+    return q.project(db, project.id);
+  }
+
+  function projectView(project) {
+    const totals = db.prepare("SELECT COUNT(*) AS tasks, SUM(status IN ('open','assigned','submitted')) AS live, COALESCE(SUM(CASE WHEN status = 'paid' THEN bounty END), 0) AS paid FROM tasks WHERE repo = ?").get(project.repo);
+    return { ...project, repo_url: `https://github.com/${project.repo}`, requester: nameOf(project.requester_id), tasks: totals.tasks, live_tasks: totals.live || 0, sats_paid: totals.paid };
+  }
+
   function createTask(account, body) {
     const repo = parseRepo(body.repo_url);
     if (!repo) throw new HttpError(400, 'repo_url must be a public GitHub repository URL like https://github.com/owner/name');
+    const project = q.projectByRepo(db, repo);
+    if (!project || project.status !== 'approved') {
+      throw new HttpError(400, `${repo} is not an approved project yet; request integration with POST /v1/projects and wait for the Git Master's yes`);
+    }
+    if (project.requester_id !== account.id) throw new HttpError(403, `only ${nameOf(project.requester_id)} posts tasks against ${repo}`);
     const title = requireString(body.title, 'title', { max: 120 });
     const text = requireString(body.body, 'body', { max: 20000 });
     const bounty = positiveInt(body.bounty, 'bounty', { min: cfg.minBounty });
@@ -162,6 +191,8 @@ export function createApp({ db, cfg, rng = Math.random }) {
     return {
       stats: stats(),
       testMode: cfg.testMode,
+      projects: db.prepare("SELECT * FROM projects WHERE status = 'approved' ORDER BY id DESC LIMIT 50").all().map(projectView),
+      pendingProjects: db.prepare("SELECT COUNT(*) AS n FROM projects WHERE status = 'pending'").get().n,
       open: db.prepare("SELECT * FROM tasks WHERE status = 'open' ORDER BY bounty DESC, id").all(),
       active: db.prepare("SELECT t.id, t.title, t.bounty, a.via, a.expires_at, w.name AS worker FROM assignments a JOIN tasks t ON t.id = a.task_id JOIN accounts w ON w.id = a.worker_id WHERE a.status = 'active' ORDER BY a.expires_at").all()
         .map((r) => ({ ...r, seconds_left: secondsLeft(r.expires_at) })),
@@ -178,7 +209,8 @@ export function createApp({ db, cfg, rng = Math.random }) {
     name: 'piecework', mode: cfg.testMode ? 'test' : 'live', fee_bps: cfg.feeBps, turnaround_min: cfg.turnaroundMin, min_stake: cfg.minStake, min_bounty: cfg.minBounty,
     docs: `${cfg.baseUrl}/agents.md`,
     max_workers_per_operator: cfg.maxWorkersPerOperator,
-    endpoints: ['POST /v1/accounts', 'GET /v1/me', 'POST /v1/me/settings', 'POST /v1/deferred/release', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
+    flow: 'request a project (POST /v1/projects) → the Git Master approves → post tasks against it (POST /v1/tasks)',
+    endpoints: ['POST /v1/accounts', 'GET /v1/projects', 'POST /v1/projects', 'GET /v1/admin/projects (Git Master)', 'POST /v1/admin/projects/:id/approve|decline (Git Master)', 'GET /v1/me', 'POST /v1/me/settings', 'POST /v1/deferred/release', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
       'POST /v1/queue/join', 'POST /v1/queue/leave', 'POST /v1/queue/jump', 'GET /v1/queue', 'GET /v1/assignments/current?wait=25',
       'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/review (Git Master)', 'POST /v1/tasks/:id/judge (Git Master)', 'POST /v1/admin/credit (Git Master)', 'GET /v1/admin/withdrawals (Git Master)', 'POST /v1/admin/withdrawals/:id/paid (Git Master)'],
   }));
@@ -216,6 +248,21 @@ export function createApp({ db, cfg, rng = Math.random }) {
       status: cfg.testMode ? 'recorded' : 'pending', sats: amount, balance: q.account(db, req.account.id).balance,
       note: cfg.testMode ? 'test mode: no real payment was made' : 'the operator pays withdrawals by hand to your payout_address, normally within a day',
     });
+  });
+
+  app.get('/v1/projects', (req, res) => {
+    const status = req.query.status ? String(req.query.status) : 'approved';
+    res.json(db.prepare('SELECT * FROM projects WHERE status = ? ORDER BY id DESC').all(status).map(projectView));
+  });
+  app.post('/v1/projects', auth('requester'), (req, res) => res.status(201).json(projectView(requestProject(req.account, req.body || {}))));
+  app.get('/v1/admin/projects', gm, (req, res) => {
+    const status = req.query.status ? String(req.query.status) : 'pending';
+    res.json(db.prepare('SELECT * FROM projects WHERE status = ? ORDER BY id').all(status).map(projectView));
+  });
+  app.post('/v1/admin/projects/:id/:decision', gm, (req, res) => {
+    const project = q.project(db, Number(req.params.id));
+    if (!project) throw new HttpError(404, 'no such project');
+    res.json(projectView(decideProject(project, req.params.decision, req.body?.reason ? String(req.body.reason).slice(0, 500) : null)));
   });
 
   app.post('/v1/tasks', auth('requester'), (req, res) => res.status(201).json(taskView(createTask(req.account, req.body || {}))));
@@ -360,7 +407,36 @@ export function createApp({ db, cfg, rng = Math.random }) {
     if (!a) throw new HttpError(409, 'nothing assigned to you');
     decline(db, a);
   }));
-  app.get('/new', (req, res) => res.send(views.newTask(ctxFor(req))));
+  app.get('/projects', (req, res) => {
+    const account = accountFromRequest(db, req);
+    res.send(views.projects({
+      approved: db.prepare("SELECT * FROM projects WHERE status = 'approved' ORDER BY id DESC").all().map(projectView),
+      mine: account ? db.prepare('SELECT * FROM projects WHERE requester_id = ? ORDER BY id DESC').all(account.id).map(projectView) : [],
+    }, ctxFor(req)));
+  });
+  app.post('/projects', (req, res) => {
+    const account = accountFromRequest(db, req);
+    if (!account || account.kind !== 'requester') return res.redirect('/join');
+    try {
+      requestProject(account, req.body || {});
+      res.redirect('/projects');
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      res.status(error.status).send(views.projects({ approved: [], mine: [], error: error.message }, ctxFor(req)));
+    }
+  });
+  app.post('/review/projects/:id/:decision', (req, res) => {
+    if (!isGitMaster(cfg, req)) throw new HttpError(403, 'Git Master key required');
+    const project = q.project(db, Number(req.params.id));
+    if (!project) throw new HttpError(404, 'no such project');
+    decideProject(project, req.params.decision, req.body.reason ? String(req.body.reason).slice(0, 500) : null);
+    res.redirect('/review');
+  });
+  app.get('/new', (req, res) => {
+    const account = accountFromRequest(db, req);
+    const mine = account ? db.prepare("SELECT * FROM projects WHERE requester_id = ? AND status = 'approved' ORDER BY id DESC").all(account.id) : [];
+    res.send(views.newTask(ctxFor(req), null, {}, mine));
+  });
   app.post('/new', (req, res) => {
     const account = accountFromRequest(db, req);
     if (!account || account.kind !== 'requester') return res.redirect('/new');
@@ -369,7 +445,8 @@ export function createApp({ db, cfg, rng = Math.random }) {
       res.redirect(`/tasks/${task.id}`);
     } catch (error) {
       if (!(error instanceof HttpError)) throw error;
-      res.status(error.status).send(views.newTask(ctxFor(req), error.message, req.body));
+      const mine = db.prepare("SELECT * FROM projects WHERE requester_id = ? AND status = 'approved' ORDER BY id DESC").all(account.id);
+      res.status(error.status).send(views.newTask(ctxFor(req), error.message, req.body, mine));
     }
   });
   app.get('/tasks/:id', (req, res) => {
@@ -392,7 +469,8 @@ export function createApp({ db, cfg, rng = Math.random }) {
       res.setHeader('Set-Cookie', cookie('pw_gm', String(req.query.key), { maxAgeDays: 30 }));
       return res.redirect('/review');
     }
-    res.send(views.review(reviewQueue(), ctxFor(req)));
+    const pending = db.prepare("SELECT * FROM projects WHERE status = 'pending' ORDER BY id").all().map(projectView);
+    res.send(views.review(reviewQueue(), ctxFor(req), pending));
   });
   app.post('/review/:id', (req, res) => {
     if (!isGitMaster(cfg, req)) throw new HttpError(403, 'Git Master key required');

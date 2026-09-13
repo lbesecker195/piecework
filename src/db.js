@@ -62,6 +62,16 @@ CREATE TABLE IF NOT EXISTS ledger (
   memo TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+CREATE TABLE IF NOT EXISTS projects (
+  id INTEGER PRIMARY KEY,
+  requester_id INTEGER NOT NULL REFERENCES accounts(id),
+  repo TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'declined')),
+  reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  decided_at TEXT
+);
 CREATE TABLE IF NOT EXISTS deferrals (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id),
@@ -110,6 +120,8 @@ export const q = {
   assignment: (db, id) => db.prepare('SELECT * FROM assignments WHERE id = ?').get(id),
   activeAssignmentFor: (db, workerId) =>
     db.prepare("SELECT * FROM assignments WHERE worker_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1").get(workerId),
+  project: (db, id) => db.prepare('SELECT * FROM projects WHERE id = ?').get(id),
+  projectByRepo: (db, repo) => db.prepare('SELECT * FROM projects WHERE lower(repo) = lower(?)').get(repo),
   latestAssignmentForTask: (db, taskId) =>
     db.prepare('SELECT * FROM assignments WHERE task_id = ? ORDER BY id DESC LIMIT 1').get(taskId),
 };

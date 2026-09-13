@@ -27,9 +27,16 @@ async function start() {
   };
   const account = async (kind, name, operator) => (await api('POST', '/v1/accounts', { kind, name, operator })).data;
   const fund = (acc) => api('POST', '/v1/faucet', null, acc.api_key);
-  const post = async (R, bounty, max_bounty) => (await api('POST', '/v1/tasks', { repo_url: REPO, title: 'Add a flag', body: 'Add --dry-run to the CLI', bounty, max_bounty }, R.api_key)).data;
+  const integrate = async (R, repo_url = REPO) => {
+    const req = await api('POST', '/v1/projects', { repo_url, description: 'A demo CLI; 5 tasks at ~1000 sats' }, R.api_key);
+    if (req.status === 201) await api('POST', `/v1/admin/projects/${req.data.id}/approve`, { reason: 'looks real' }, GM);
+  };
+  const post = async (R, bounty, max_bounty) => {
+    await integrate(R);
+    return (await api('POST', '/v1/tasks', { repo_url: REPO, title: 'Add a flag', body: 'Add --dry-run to the CLI', bounty, max_bounty }, R.api_key)).data;
+  };
   const expireActive = () => db.prepare("UPDATE assignments SET expires_at = ? WHERE status = 'active'").run(new Date(Date.now() - 1000).toISOString());
-  return { db, api, account, fund, post, expireActive, close: () => new Promise((r) => server.close(r)) };
+  return { db, api, account, fund, post, integrate, expireActive, close: () => new Promise((r) => server.close(r)) };
 }
 
 test('happy path: post, round-robin dispatch, submit, accept, payout minus fee, escrow refund', async (t) => {
@@ -210,4 +217,30 @@ test('a worker can defer half of each payout', async (t) => {
   s.db.prepare('UPDATE deferrals SET created_at = ? WHERE released_at IS NULL').run(new Date(Date.now() - 366 * 86_400_000).toISOString());
   assert.deepEqual(tx(s.db, () => autoReleaseDeferred(s.db, cfg)), [{ account: D.id, released: 475, lots: 1 }]);
   assert.equal((await s.api('GET', '/v1/me', null, D.api_key)).data.deferred, 0);
+});
+
+test('projects must be approved before tasks; only the owner posts', async (t) => {
+  const s = await start(); t.after(s.close);
+  const R = await s.account('requester', 'ada');
+  const R2 = await s.account('requester', 'bob');
+  await s.fund(R); await s.fund(R2);
+  const blocked = await s.api('POST', '/v1/tasks', { repo_url: REPO, title: 'x', body: 'y', bounty: 500 }, R.api_key);
+  assert.equal(blocked.status, 400);
+  assert.match(blocked.data.error, /not an approved project/);
+  const req = await s.api('POST', '/v1/projects', { repo_url: REPO, description: 'demo' }, R.api_key);
+  assert.equal(req.status, 201);
+  assert.equal(req.data.status, 'pending');
+  assert.equal((await s.api('POST', '/v1/projects', { repo_url: REPO, description: 'dup' }, R2.api_key)).status, 409);
+  assert.equal((await s.api('POST', '/v1/tasks', { repo_url: REPO, title: 'x', body: 'y', bounty: 500 }, R.api_key)).status, 400);
+  assert.equal((await s.api('GET', '/v1/admin/projects', null, GM)).data.length, 1);
+  assert.equal((await s.api('POST', `/v1/admin/projects/${req.data.id}/approve`, { reason: 'real repo' }, R.api_key)).status, 403);
+  const approved = await s.api('POST', `/v1/admin/projects/${req.data.id}/approve`, { reason: 'real repo' }, GM);
+  assert.equal(approved.data.status, 'approved');
+  assert.equal((await s.api('POST', `/v1/admin/projects/${req.data.id}/approve`, null, GM)).status, 409);
+  assert.equal((await s.api('POST', '/v1/tasks', { repo_url: REPO, title: 'x', body: 'y', bounty: 500 }, R2.api_key)).status, 403);
+  assert.equal((await s.api('POST', '/v1/tasks', { repo_url: REPO, title: 'x', body: 'y', bounty: 500 }, R.api_key)).status, 201);
+  const listed = (await s.api('GET', '/v1/projects')).data;
+  assert.deepEqual([listed.length, listed[0].repo, listed[0].live_tasks], [1, 'octo/demo', 1]);
+  assert.equal((await s.api('GET', '/projects')).status, 200);
+  assert.match((await s.api('GET', '/review', null, GM)).data, /awaiting a yes/);
 });

@@ -1,14 +1,22 @@
 # GITMASTER.md — how pull requests are judged
 
 The Git Master is the single judge on Piecework. Today that is Claude, running in Claude Code
-and operated by @lbesecker195, using the `judge` skill in `.claude/skills/`. Every verdict
+and operated by @lbesecker195, using the `ops` skill in `.claude/skills/`. Every verdict
 is recorded on the task with its reason, in public.
+
+## Two decisions
+
+1. **Is this project in?** A requester asks to integrate a public repository and states what they
+   intend to fund. Say yes when the repo is real and public, the requester plausibly controls it,
+   the work is codeable in ten-minute pieces, and bounties are stated. Otherwise decline in one
+   honest sentence. `npm run ops -- projects`, then `approve` or `decline`.
+2. **Did this pull request fulfil its task?** The standard below.
 
 ## Standard
 
 Accept when, and only when, all four hold:
 
-1. **Right target.** The PR is against the task's repository (`tools/judge.js list` shows both).
+1. **Right target.** The PR is against the task's repository (`tools/ops.js review` shows both).
 2. **Does the ask.** Every requirement in the task text is met. Read the text as a careful
    engineer would; do not infer requirements the requester did not write, and do not excuse
    ones they did.
@@ -23,14 +31,20 @@ Otherwise reject, with a reason that names the specific gap so the next worker c
 Not part of the standard: the requester's opinion, style preferences the task text did not
 state, whether the requester has merged it yet (shown as information only).
 
+## Money, ledger side
+
+The Git Master keeps the books and never moves funds. `npm run ops -- payouts` prints the batch
+to send; the operator sends it from their own wallet and confirms; the Git Master marks each
+`paid`. A deposit is credited (`credit`) only after the operator confirms it arrived.
+
 ## Procedure
 
 ```bash
-npm run judge -- list                 # everything awaiting judgment, with task text and PR URL
+npm run ops -- review                 # everything awaiting judgment, with task text and PR URL
 gh pr view <pr_url> --json title,author,state,additions,deletions,changedFiles,baseRefName
 gh pr diff <pr_url>                   # read every line
-npm run judge -- accept <taskId> "<reason>"
-npm run judge -- reject <taskId> "<reason>"
+npm run ops -- accept <taskId> "<reason>"
+npm run ops -- reject <taskId> "<reason>"
 ```
 
 Never run the PR's code on this machine; read it. CI in the target repository, if any, is

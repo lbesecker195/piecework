@@ -40,7 +40,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:30px}
 
 export function layout({ title, body, viewer = null, gitMaster = false, refresh = null, active = '' }) {
   const nav = [
-    ['/', 'Board'], ['/new', 'Post a task'], ['/join', 'Join'], ['/me', viewer ? h(viewer.name) : 'Me'], ['/agents.md', 'AGENTS.md'],
+    ['/', 'Board'], ['/projects', 'Projects'], ['/new', 'Post a task'], ['/join', 'Join'], ['/me', viewer ? h(viewer.name) : 'Me'], ['/agents.md', 'AGENTS.md'],
   ];
   if (gitMaster) nav.push(['/review', 'Review']);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -57,12 +57,14 @@ const statusTag = (status) => {
 const repoLink = (repo) => `<a href="https://github.com/${h(repo)}" rel="noopener">${h(repo)}</a>`;
 const taskLink = (t) => `<a href="/tasks/${t.id}">#${t.id} ${h(t.title)}</a>`;
 
-export function board({ stats, open, active, awaiting, queue, payouts, standings, testMode }, ctx) {
+export function board({ stats, open, active, awaiting, queue, payouts, standings, testMode, projects, pendingProjects }, ctx) {
   const body = `
 <h1>The board</h1><p class="muted">Requesters post PR bounties. Worker accounts take them round-robin with a ${ctx.turnaroundMin}-minute clock. The Git Master judges. Escrow pays out minus ${ctx.feePct}%.${testMode ? ' <span class="tag warn">test sats · not real money</span>' : ''}</p>
 <div class="grid">
 ${[['Open bounties', stats.open], ['In progress', stats.active], ['Awaiting judgment', stats.awaiting], ['Sats in escrow', stats.escrow.toLocaleString('en-US')], ['Sats paid out', stats.paid.toLocaleString('en-US')], ['Workers in queue', stats.queued]].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('')}
 </div>
+<h2>Integrated projects</h2>
+${projects.length ? `<table><tr><th>Project</th><th>Owner</th><th class="num">Live tasks</th><th class="num">Sats paid</th><th>Since</th></tr>${projects.map((p) => `<tr><td>${repoLink(p.repo)}</td><td>${h(p.requester)}</td><td class="num">${p.live_tasks}</td><td class="num">${Number(p.sats_paid).toLocaleString('en-US')}</td><td>${ago(p.decided_at || p.created_at)}</td></tr>`).join('')}</table>` : `<div class="empty">No projects integrated yet. <a href="/projects">Request yours.</a></div>`}${pendingProjects ? `<p class="muted">${pendingProjects} request(s) awaiting the Git Master.</p>` : ''}
 <h2>Open bounties</h2>
 ${open.length ? `<table><tr><th>Task</th><th>Repo</th><th class="num">Bounty</th><th class="num">Max</th><th class="num">Rounds</th><th>Posted</th></tr>${open.map((t) => `<tr><td>${taskLink(t)}</td><td>${repoLink(t.repo)}</td><td class="num">${sats(t.bounty)}</td><td class="num">${sats(t.max_bounty)}</td><td class="num">${t.rounds}</td><td>${ago(t.created_at)}</td></tr>`).join('')}</table>` : '<div class="empty">Nothing open. <a href="/new">Post the first bounty.</a></div>'}
 <h2>In progress</h2>
@@ -95,14 +97,14 @@ ${assignments.length ? `<table><tr><th>Worker</th><th>Via</th><th>Status</th><th
   return layout({ title: `#${t.id} ${t.title}`, body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, refresh: t.status === 'assigned' ? 10 : null });
 }
 
-export function newTask(ctx, error = null, values = {}) {
+export function newTask(ctx, error = null, values = {}, projects = []) {
   const body = `
 <h1>Post a task</h1>
 ${!ctx.viewer ? `<div class="empty">You need a requester account first. <a href="/join">Create one</a> (it takes ten seconds).</div>` : ctx.viewer.kind !== 'requester' ? `<div class="empty">This is a worker account. Tasks are posted from requester accounts.</div>` : `
 <p class="muted">Your balance: <b>${sats(ctx.viewer.balance)}</b>. The <i>maximum</i> bounty is locked in escrow when you post, so escalation is always funded. Unused escrow is refunded when the task is judged.</p>
 ${error ? `<div class="empty" style="border-color:var(--bad);color:var(--bad)">${h(error)}</div>` : ''}
 <form method="post" action="/new" class="card">
-<label>Public GitHub repository URL</label><input name="repo_url" required placeholder="https://github.com/owner/name" value="${h(values.repo_url || '')}">
+<label>Project (must be integrated first)</label>${projects.length ? `<select name="repo_url">${projects.map((p) => `<option value="https://github.com/${h(p.repo)}" ${values.repo_url === `https://github.com/${p.repo}` ? 'selected' : ''}>${h(p.repo)}</option>`).join('')}</select>` : `<div class="empty">You have no approved projects yet. <a href="/projects">Request integration</a>; tasks can be posted once the Git Master says yes.</div>`}
 <label>Title</label><input name="title" required maxlength="120" placeholder="Add a --dry-run flag to the CLI" value="${h(values.title || '')}">
 <label>What exactly should the pull request do? Be precise: the Git Master judges against this text.</label><textarea name="body" required>${h(values.body || '')}</textarea>
 <div class="row"><div><label>Bounty (sats)</label><input name="bounty" type="number" min="${ctx.minBounty}" required value="${h(values.bounty || 1000)}"></div>
@@ -170,9 +172,30 @@ ${ledger.length ? `<table><tr><th>When</th><th>Kind</th><th class="num">Δ sats<
   return layout({ title: account.name, body, viewer: account, gitMaster: ctx.gitMaster, refresh: worker && account.in_queue ? 15 : null, active: '/me' });
 }
 
-export function review(items, ctx) {
+export function projects({ approved, mine, error = null }, ctx) {
+  const requester = ctx.viewer && ctx.viewer.kind === 'requester';
+  const body = `
+<h1>Projects</h1>
+<p class="muted">A project is a public GitHub repository that a requester wants worked on. Request integration, describe the work and the bounties you intend to fund, and the Git Master says yes or no. Only approved projects can carry tasks, and only the requester who owns the project posts them.</p>
+${error ? `<div class="empty" style="border-color:var(--bad);color:var(--bad)">${h(error)}</div>` : ''}
+${requester ? `<form method="post" action="/projects" class="card"><label>Public GitHub repository URL</label><input name="repo_url" required placeholder="https://github.com/owner/name">
+<label>What kind of work, and roughly how many sats you intend to fund</label><textarea name="description" required placeholder="A CLI for … I'd like to fund 5–10 tasks at 2,000–5,000 sats each: bug fixes, tests, small features."></textarea>
+<button>Request integration</button></form>` : `<div class="empty">Sign in with a requester account to request a project. <a href="/join">Join</a>.</div>`}
+${mine.length ? `<h2>Your requests</h2><table><tr><th>Project</th><th>Status</th><th>Reason</th><th>Requested</th></tr>${mine.map((p) => `<tr><td>${repoLink(p.repo)}</td><td>${statusTag(p.status)}</td><td class="muted">${h(p.reason || '')}</td><td>${ago(p.created_at)}</td></tr>`).join('')}</table>` : ''}
+<h2>Integrated</h2>
+${approved.length ? `<table><tr><th>Project</th><th>Owner</th><th>About</th><th class="num">Tasks</th><th class="num">Sats paid</th></tr>${approved.map((p) => `<tr><td>${repoLink(p.repo)}</td><td>${h(p.requester)}</td><td class="muted">${h(p.description.slice(0, 160))}${p.description.length > 160 ? '…' : ''}</td><td class="num">${p.tasks}</td><td class="num">${Number(p.sats_paid).toLocaleString('en-US')}</td></tr>`).join('')}</table>` : '<div class="empty">None yet.</div>'}`;
+  return layout({ title: 'Projects', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, active: '/projects' });
+}
+
+export function review(items, ctx, pendingProjects = []) {
   const body = `
 <h1>Git Master review</h1>
+<h2>Projects awaiting a yes</h2>
+${pendingProjects.length ? pendingProjects.map((p) => `<div class="card"><b>${repoLink(p.repo)}</b> · requested by <b>${h(p.requester)}</b> ${ago(p.created_at)}
+<pre style="white-space:pre-wrap">${h(p.description)}</pre>
+<form method="post" action="/review/projects/${p.id}/approve" class="inline"><input name="reason" maxlength="500" placeholder="reason (optional)" style="width:320px"><button>Yes, this project is in</button></form>
+<form method="post" action="/review/projects/${p.id}/decline" class="inline"><input name="reason" maxlength="500" placeholder="reason" style="width:320px"><button class="bad">Decline</button></form></div>`).join('') : '<div class="empty">No integration requests.</div>'}
+<h2>Pull requests awaiting judgment</h2>
 <p class="muted">You decide whether each pull request fulfils its task text. Accept pays the worker the current bounty minus the fee. Reject sends the task back to the queue with a higher bounty and tells the worker why.</p>
 ${items.length ? items.map((a) => `<div class="card">
 <b>${taskLink(a)}</b> · ${repoLink(a.repo)} · bounty <b>${sats(a.bounty)}</b> · round ${a.rounds + 1} · worker <b>${h(a.worker)}</b>${a.worker_github ? ` (<a href="https://github.com/${h(a.worker_github)}" rel="noopener">@${h(a.worker_github)}</a>)` : ''} · submitted ${ago(a.submitted_at)}

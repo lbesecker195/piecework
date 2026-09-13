@@ -9,7 +9,8 @@
     "start": "node --disable-warning=ExperimentalWarning src/server.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
     "test": "node --disable-warning=ExperimentalWarning --test",
-    "judge": "node --disable-warning=ExperimentalWarning tools/judge.js",
+    "judge": "node --disable-warning=ExperimentalWarning tools/ops.js",
+    "ops": "node --disable-warning=ExperimentalWarning tools/ops.js",
     "worker": "node --disable-warning=ExperimentalWarning tools/worker-example.js"
   },
   "dependencies": {
