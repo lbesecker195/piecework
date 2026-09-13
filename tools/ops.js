@@ -35,7 +35,13 @@ const tail = rest.join(' ') || null;
 const headers = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
 
 async function call(method, path, body) {
-  const response = await fetch(url + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  let response;
+  try {
+    response = await fetch(url + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  } catch (error) {
+    console.error(`cannot reach ${url}: ${error.cause?.code || error.cause?.message || error.message}`);
+    process.exit(3);
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) { console.error(`${response.status}: ${data.error || response.statusText}`); process.exit(1); }
   return data;
