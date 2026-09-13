@@ -143,7 +143,7 @@ export function me(account, extra, ctx) {
   const worker = account.kind === 'worker';
   const body = `
 <h1>${h(account.name)} <span class="tag">${h(account.kind)}</span></h1>
-<div class="grid"><div class="stat"><b>${sats(account.balance)}</b><span>balance</span></div>${worker ? `<div class="stat"><b>${sats(account.stake)}</b><span>stake</span></div><div class="stat"><b>${account.in_queue ? 'yes' : 'no'}</b><span>in queue</span></div><div class="stat"><b>${account.strikes}</b><span>strikes</span></div><div class="stat"><b>${sats(account.earned)}</b><span>earned</span></div>` : ''}</div>
+<div class="grid"><div class="stat"><b>${sats(account.balance)}</b><span>balance</span></div>${worker ? `<div class="stat"><b>${sats(account.stake)}</b><span>stake</span></div><div class="stat"><b>${account.in_queue ? 'yes' : 'no'}</b><span>in queue</span></div><div class="stat"><b>${account.strikes}</b><span>strikes</span></div><div class="stat"><b>${sats(account.earned)}</b><span>earned</span></div><div class="stat"><b>${sats(account.deferred)}</b><span>deferred</span></div>` : ''}</div>
 ${testMode ? `<form method="post" action="/me/faucet" class="inline"><button class="ghost">Get ${extra.faucetSats.toLocaleString('en-US')} test sats</button></form>` : ''}
 ${worker ? `
 <h2>Queue</h2>
@@ -153,6 +153,9 @@ ${account.in_queue
        <form method="post" action="/me/queue/jump" class="inline"><button class="ghost" ${account.jump_armed_on ? 'disabled' : ''}>${account.jump_armed_on ? '🎲 jump armed for today' : '🎲 Arm today’s queue jump'}</button></form>`
     : `<form method="post" action="/me/queue/join"><label>Stake (min ${minStake} sats; refundable; 10% slashed after 3 timeouts)</label><input name="stake" type="number" min="${minStake}" value="${minStake}"><button>Join the queue</button></form>`}
 </div>
+<h2>Deferral</h2>
+<div class="card"><p class="muted">Defer half of every payout into a balance that stays yours but is not withdrawable yet. Release terms are set by the operator.</p>
+<form method="post" action="/me/defer" class="inline"><input type="hidden" name="defer_pct" value="${account.defer_pct ? 0 : 50}"><button class="ghost">${account.defer_pct ? 'Deferring 50% · switch off' : 'Defer 50% of earnings'}</button></form></div>
 <h2>Current assignment</h2>
 ${assignment ? `<div class="card"><b>${taskLink(assignment.task)}</b> · ${repoLink(assignment.task.repo)} · <b>${sats(assignment.task.bounty)}</b> · clock <b>${clock(assignment.seconds_left)}</b> · via ${h(assignment.via)}
 <pre style="white-space:pre-wrap">${h(assignment.task.body)}</pre>

@@ -170,3 +170,23 @@ test('pages and edges', async (t) => {
   assert.equal(info.mode, 'test');
   assert.equal(info.max_workers_per_operator, 1);
 });
+
+test('a worker can defer half of each payout', async (t) => {
+  const s = await start(); t.after(s.close);
+  const R = await s.account('requester', 'ada');
+  const D = await s.account('worker', 'delta', 'op-d');
+  await s.fund(R); await s.fund(D);
+  await s.api('POST', '/v1/queue/join', { stake: 100 }, D.api_key);
+  assert.equal((await s.api('POST', '/v1/me/settings', { defer_pct: 30 }, D.api_key)).status, 400);
+  assert.equal((await s.api('POST', '/v1/me/settings', { defer_pct: 50 }, D.api_key)).status, 200);
+  const task = await s.post(R, 1000);
+  dispatch(s.db, cfg, () => 0.99);
+  const current = (await s.api('GET', '/v1/assignments/current', null, D.api_key)).data;
+  await s.api('POST', current.submit.url, { pr_url: `${REPO}/pull/3` }, D.api_key);
+  const verdict = (await s.api('POST', `/v1/tasks/${task.id}/judge`, { verdict: 'accept' }, GM)).data;
+  assert.deepEqual([verdict.net, verdict.deferred], [950, 475]);
+  const me = (await s.api('GET', '/v1/me', null, D.api_key)).data;
+  assert.deepEqual([me.balance, me.deferred, me.earned], [10000 - 100 + 475, 475, 950]);
+  const kinds = (await s.api('GET', '/v1/ledger', null, D.api_key)).data.map((l) => l.kind);
+  assert.ok(kinds.includes('payout_deferred'));
+});

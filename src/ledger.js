@@ -32,13 +32,21 @@ export function payout(db, cfg, task, workerId) {
   {
     const fee = feeFor(task.bounty, cfg.feeBps);
     const net = task.bounty - fee;
-    move(db, workerId, net, 'payout', task.id, `bounty for task #${task.id}`);
+    const worker = db.prepare('SELECT defer_pct FROM accounts WHERE id = ?').get(workerId);
+    const deferred = Math.floor((net * (worker?.defer_pct || 0)) / 100);
+    move(db, workerId, net - deferred, 'payout', task.id, `bounty for task #${task.id}`);
+    if (deferred > 0) {
+      db.prepare('UPDATE accounts SET deferred = deferred + ? WHERE id = ?').run(deferred, workerId);
+      db.prepare('INSERT INTO ledger (account_id, delta, kind, task_id, memo) VALUES (?, ?, ?, ?, ?)').run(
+        workerId, deferred, 'payout_deferred', task.id, `${worker.defer_pct}% of task #${task.id} deferred`,
+      );
+    }
     if (fee > 0) move(db, PLATFORM_ID, fee, 'fee', task.id, `${cfg.feeBps / 100}% fee on task #${task.id}`);
     const unused = task.escrow - task.bounty;
     if (unused > 0) move(db, task.requester_id, unused, 'escrow_refund', task.id, 'unused escrow');
     db.prepare("UPDATE tasks SET escrow = 0, status = 'paid', updated_at = ? WHERE id = ?").run(nowIso(), task.id);
     db.prepare('UPDATE accounts SET completed = completed + 1, earned = earned + ? WHERE id = ?').run(net, workerId);
-    return { gross: task.bounty, fee, net };
+    return { gross: task.bounty, fee, net, deferred };
   }
 }
 

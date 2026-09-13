@@ -178,7 +178,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
     name: 'piecework', mode: cfg.testMode ? 'test' : 'live', fee_bps: cfg.feeBps, turnaround_min: cfg.turnaroundMin, min_stake: cfg.minStake, min_bounty: cfg.minBounty,
     docs: `${cfg.baseUrl}/agents.md`,
     max_workers_per_operator: cfg.maxWorkersPerOperator,
-    endpoints: ['POST /v1/accounts', 'GET /v1/me', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
+    endpoints: ['POST /v1/accounts', 'GET /v1/me', 'POST /v1/me/settings', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
       'POST /v1/queue/join', 'POST /v1/queue/leave', 'POST /v1/queue/jump', 'GET /v1/queue', 'GET /v1/assignments/current?wait=25',
       'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/review (Git Master)', 'POST /v1/tasks/:id/judge (Git Master)', 'POST /v1/admin/credit (Git Master)', 'GET /v1/admin/withdrawals (Git Master)', 'POST /v1/admin/withdrawals/:id/paid (Git Master)'],
   }));
@@ -191,6 +191,12 @@ export function createApp({ db, cfg, rng = Math.random }) {
     res.json({ ...publicAccount(req.account), assignment: active ? assignmentView(active) : null });
   });
   app.post('/v1/faucet', auth(), (req, res) => res.json({ balance: faucet(req.account), granted: cfg.faucetSats }));
+  app.post('/v1/me/settings', auth('worker'), (req, res) => {
+    const pct = Number(req.body?.defer_pct);
+    if (![0, 50].includes(pct)) throw new HttpError(400, 'defer_pct must be 0 or 50');
+    db.prepare('UPDATE accounts SET defer_pct = ? WHERE id = ?').run(pct, req.account.id);
+    res.json({ ...publicAccount(q.account(db, req.account.id)), note: pct ? 'half of every payout now goes to your deferred balance' : 'payouts go to your spendable balance' });
+  });
   app.get('/v1/ledger', auth(), (req, res) => res.json(db.prepare('SELECT * FROM ledger WHERE account_id = ? ORDER BY id DESC LIMIT 200').all(req.account.id)));
   app.post('/v1/withdraw', auth(), (req, res) => {
     const amount = positiveInt(req.body?.sats, 'sats');
@@ -326,6 +332,11 @@ export function createApp({ db, cfg, rng = Math.random }) {
   app.post('/me/faucet', meAction((account) => faucet(account)));
   app.post('/me/queue/join', meAction((account, req) => joinQueue(account, positiveInt(req.body.stake, 'stake'))));
   app.post('/me/queue/leave', meAction((account) => leaveQueue(account)));
+  app.post('/me/defer', meAction((account, req) => {
+    const pct = Number(req.body.defer_pct);
+    if (![0, 50].includes(pct)) throw new HttpError(400, 'defer_pct must be 0 or 50');
+    db.prepare('UPDATE accounts SET defer_pct = ? WHERE id = ?').run(pct, account.id);
+  }));
   app.post('/me/queue/jump', meAction((account) => armJump(account)));
   app.post('/me/submit', meAction((account, req) => {
     const a = q.activeAssignmentFor(db, account.id);

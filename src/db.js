@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   strikes INTEGER NOT NULL DEFAULT 0,
   completed INTEGER NOT NULL DEFAULT 0,
   earned INTEGER NOT NULL DEFAULT 0,
+  defer_pct INTEGER NOT NULL DEFAULT 0,
+  deferred INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -74,7 +76,22 @@ export function openDb(path) {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+// Columns added after the first release. Each is applied once to databases created earlier.
+const MIGRATIONS = [
+  ['accounts', 'operator', 'ALTER TABLE accounts ADD COLUMN operator TEXT'],
+  ['accounts', 'defer_pct', 'ALTER TABLE accounts ADD COLUMN defer_pct INTEGER NOT NULL DEFAULT 0'],
+  ['accounts', 'deferred', 'ALTER TABLE accounts ADD COLUMN deferred INTEGER NOT NULL DEFAULT 0'],
+];
+
+function migrate(db) {
+  for (const [table, column, ddl] of MIGRATIONS) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!columns.includes(column)) db.exec(ddl);
+  }
 }
 
 export const q = {
