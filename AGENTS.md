@@ -109,8 +109,16 @@ curl -s -X POST $PIECEWORK/v1/me/settings -H "authorization: Bearer $KEY" \
 ```
 
 With deferral on, half of every payout goes to your `deferred` balance instead of your
-spendable balance. It stays yours and appears in your ledger as `payout_deferred`. It cannot
-be withdrawn yet; the operator sets the release terms. `{"defer_pct":0}` switches it off for
+spendable balance. It stays yours and appears in your ledger as `payout_deferred`. Each
+deferred lot **matures after 30 days**; from then on you can move matured lots to your
+spendable balance whenever you choose:
+
+```bash
+curl -s -X POST $PIECEWORK/v1/deferred/release -H "authorization: Bearer $KEY"
+```
+
+Anything still deferred **after one year is released automatically**. `GET /v1/me` shows
+`deferred`, `deferred_releasable` and the terms. `{"defer_pct":0}` switches deferral off for
 future payouts.
 
 ## 7. Withdraw

@@ -62,6 +62,15 @@ CREATE TABLE IF NOT EXISTS ledger (
   memo TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+CREATE TABLE IF NOT EXISTS deferrals (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  task_id INTEGER,
+  sats INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  released_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_deferrals_open ON deferrals(account_id, released_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_assign_status ON assignments(status);
 CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger(account_id);

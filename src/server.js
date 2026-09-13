@@ -4,6 +4,8 @@ import { config } from './config.js';
 import { openDb } from './db.js';
 import { createApp } from './app.js';
 import { dispatch, sweepTimeouts } from './dispatch.js';
+import { autoReleaseDeferred } from './ledger.js';
+import { tx } from './util.js';
 import { pollSubmitted } from './github.js';
 import { newKey } from './util.js';
 
@@ -29,6 +31,13 @@ const tick = () => {
 };
 setInterval(tick, 3000);
 setInterval(() => pollSubmitted(db, cfg).catch((error) => console.error('[github]', error)), 60_000);
+setInterval(() => {
+  try {
+    for (const r of tx(db, () => autoReleaseDeferred(db, cfg))) console.log(`[deferral] account ${r.account}: ${r.released} sats auto-released after ${cfg.deferMaxDays} days`);
+  } catch (error) {
+    console.error('[deferral]', error);
+  }
+}, 60_000);
 
 app.listen(cfg.port, () => {
   console.log(`Piecework ${cfg.testMode ? '(test sats)' : '(LIVE)'} on ${cfg.baseUrl}`);

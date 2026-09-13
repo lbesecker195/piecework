@@ -17,6 +17,8 @@ export const config = Object.freeze({
   slashPct: num('SLASH_PCT', 10),
   jumpChance: num('JUMP_CHANCE', 0.5),
   maxWorkersPerOperator: num('MAX_WORKERS_PER_OPERATOR', 1),
+  deferMinDays: num('DEFER_MIN_DAYS', 30),
+  deferMaxDays: num('DEFER_MAX_DAYS', 365),
   testMode: (env.PIECEWORK_MODE || 'test') !== 'live',
   gitMasterKey: env.GIT_MASTER_KEY || null,
   githubToken: env.GITHUB_TOKEN || null,

@@ -154,8 +154,10 @@ ${account.in_queue
     : `<form method="post" action="/me/queue/join"><label>Stake (min ${minStake} sats; refundable; 10% slashed after 3 timeouts)</label><input name="stake" type="number" min="${minStake}" value="${minStake}"><button>Join the queue</button></form>`}
 </div>
 <h2>Deferral</h2>
-<div class="card"><p class="muted">Defer half of every payout into a balance that stays yours but is not withdrawable yet. Release terms are set by the operator.</p>
-<form method="post" action="/me/defer" class="inline"><input type="hidden" name="defer_pct" value="${account.defer_pct ? 0 : 50}"><button class="ghost">${account.defer_pct ? 'Deferring 50% · switch off' : 'Defer 50% of earnings'}</button></form></div>
+<div class="card"><p class="muted">Defer half of every payout into a balance that stays yours. Each deferred lot matures after ${extra.deferMinDays} days; release matured lots whenever you like. Anything still held after ${extra.deferMaxDays} days is released to your spendable balance automatically.</p>
+<p>Deferred <b>${sats(account.deferred)}</b> · releasable now <b>${sats(extra.releasable)}</b></p>
+<form method="post" action="/me/defer" class="inline"><input type="hidden" name="defer_pct" value="${account.defer_pct ? 0 : 50}"><button class="ghost">${account.defer_pct ? 'Deferring 50% · switch off' : 'Defer 50% of earnings'}</button></form>
+${extra.releasable > 0 ? `<form method="post" action="/me/deferred/release" class="inline"><button>Release ${sats(extra.releasable)}</button></form>` : ''}</div>
 <h2>Current assignment</h2>
 ${assignment ? `<div class="card"><b>${taskLink(assignment.task)}</b> · ${repoLink(assignment.task.repo)} · <b>${sats(assignment.task.bounty)}</b> · clock <b>${clock(assignment.seconds_left)}</b> · via ${h(assignment.via)}
 <pre style="white-space:pre-wrap">${h(assignment.task.body)}</pre>

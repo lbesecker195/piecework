@@ -4,7 +4,7 @@ import { dirname, join as joinPath } from 'node:path';
 import express from 'express';
 import { PLATFORM_ID, publicAccount, q } from './db.js';
 import { accountFromRequest, cookie, isGitMaster, requireAccount, requireGitMaster } from './auth.js';
-import { lockEscrow, move, payout, refundEscrow, stake, unstake } from './ledger.js';
+import { lockEscrow, move, payout, refundEscrow, releasableDeferred, releaseDeferred, stake, unstake } from './ledger.js';
 import { decline, dispatch, judge, submit } from './dispatch.js';
 import { parseRepo } from './github.js';
 import { HttpError, hashKey, newKey, nowIso, positiveInt, requireString, secondsLeft, today, tx } from './util.js';
@@ -178,7 +178,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
     name: 'piecework', mode: cfg.testMode ? 'test' : 'live', fee_bps: cfg.feeBps, turnaround_min: cfg.turnaroundMin, min_stake: cfg.minStake, min_bounty: cfg.minBounty,
     docs: `${cfg.baseUrl}/agents.md`,
     max_workers_per_operator: cfg.maxWorkersPerOperator,
-    endpoints: ['POST /v1/accounts', 'GET /v1/me', 'POST /v1/me/settings', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
+    endpoints: ['POST /v1/accounts', 'GET /v1/me', 'POST /v1/me/settings', 'POST /v1/deferred/release', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
       'POST /v1/queue/join', 'POST /v1/queue/leave', 'POST /v1/queue/jump', 'GET /v1/queue', 'GET /v1/assignments/current?wait=25',
       'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/review (Git Master)', 'POST /v1/tasks/:id/judge (Git Master)', 'POST /v1/admin/credit (Git Master)', 'GET /v1/admin/withdrawals (Git Master)', 'POST /v1/admin/withdrawals/:id/paid (Git Master)'],
   }));
@@ -188,7 +188,16 @@ export function createApp({ db, cfg, rng = Math.random }) {
   });
   app.get('/v1/me', auth(), (req, res) => {
     const active = req.account.kind === 'worker' ? q.activeAssignmentFor(db, req.account.id) : null;
-    res.json({ ...publicAccount(req.account), assignment: active ? assignmentView(active) : null });
+    const releasable = req.account.kind === 'worker' ? releasableDeferred(db, cfg, req.account.id) : null;
+    res.json({
+      ...publicAccount(req.account), assignment: active ? assignmentView(active) : null,
+      deferred_releasable: releasable ? releasable.sats : 0,
+      deferral_terms: { defer_pct_options: [0, 50], min_days: cfg.deferMinDays, auto_release_days: cfg.deferMaxDays },
+    });
+  });
+  app.post('/v1/deferred/release', auth('worker'), (req, res) => {
+    const result = tx(db, () => releaseDeferred(db, cfg, req.account.id));
+    res.json({ ...result, balance: q.account(db, req.account.id).balance, deferred: q.account(db, req.account.id).deferred });
   });
   app.post('/v1/faucet', auth(), (req, res) => res.json({ balance: faucet(req.account), granted: cfg.faucetSats }));
   app.post('/v1/me/settings', auth('worker'), (req, res) => {
@@ -321,6 +330,8 @@ export function createApp({ db, cfg, rng = Math.random }) {
       tasks: db.prepare('SELECT * FROM tasks WHERE requester_id = ? ORDER BY id DESC').all(account.id),
       assignment: active ? assignmentView(active) : null,
       testMode: cfg.testMode, minStake: cfg.minStake, faucetSats: cfg.faucetSats,
+      releasable: account.kind === 'worker' ? releasableDeferred(db, cfg, account.id).sats : 0,
+      deferMinDays: cfg.deferMinDays, deferMaxDays: cfg.deferMaxDays,
     }, ctxFor(req)));
   });
   const meAction = (fn) => (req, res) => {
@@ -332,6 +343,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
   app.post('/me/faucet', meAction((account) => faucet(account)));
   app.post('/me/queue/join', meAction((account, req) => joinQueue(account, positiveInt(req.body.stake, 'stake'))));
   app.post('/me/queue/leave', meAction((account) => leaveQueue(account)));
+  app.post('/me/deferred/release', meAction((account) => tx(db, () => releaseDeferred(db, cfg, account.id))));
   app.post('/me/defer', meAction((account, req) => {
     const pct = Number(req.body.defer_pct);
     if (![0, 50].includes(pct)) throw new HttpError(400, 'defer_pct must be 0 or 50');

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { openDb, q } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import { dispatch, sweepTimeouts } from '../src/dispatch.js';
+import { autoReleaseDeferred } from '../src/ledger.js';
+import { tx } from '../src/util.js';
 import { config } from '../src/config.js';
 
 const GM = 'gm-test-key';
@@ -189,4 +191,23 @@ test('a worker can defer half of each payout', async (t) => {
   assert.deepEqual([me.balance, me.deferred, me.earned], [10000 - 100 + 475, 475, 950]);
   const kinds = (await s.api('GET', '/v1/ledger', null, D.api_key)).data.map((l) => l.kind);
   assert.ok(kinds.includes('payout_deferred'));
+
+  // Nothing has matured yet.
+  assert.equal(me.deferred_releasable, 0);
+  assert.deepEqual((await s.api('POST', '/v1/deferred/release', null, D.api_key)).data.released, 0);
+  // Backdate the lot 31 days: it matures and can be released on request.
+  s.db.prepare('UPDATE deferrals SET created_at = ? WHERE account_id = ?').run(new Date(Date.now() - 31 * 86_400_000).toISOString(), D.id);
+  assert.equal((await s.api('GET', '/v1/me', null, D.api_key)).data.deferred_releasable, 475);
+  const released = (await s.api('POST', '/v1/deferred/release', null, D.api_key)).data;
+  assert.deepEqual([released.released, released.lots, released.balance, released.deferred], [475, 1, 10000 - 100 + 950, 0]);
+  // A second lot left alone for over a year is released automatically.
+  const task2 = await s.post(R, 1000);
+  dispatch(s.db, cfg, () => 0.99);
+  const cur2 = (await s.api('GET', '/v1/assignments/current', null, D.api_key)).data;
+  await s.api('POST', cur2.submit.url, { pr_url: `${REPO}/pull/4` }, D.api_key);
+  await s.api('POST', `/v1/tasks/${task2.id}/judge`, { verdict: 'accept' }, GM);
+  assert.deepEqual(tx(s.db, () => autoReleaseDeferred(s.db, cfg)), []);
+  s.db.prepare('UPDATE deferrals SET created_at = ? WHERE released_at IS NULL').run(new Date(Date.now() - 366 * 86_400_000).toISOString());
+  assert.deepEqual(tx(s.db, () => autoReleaseDeferred(s.db, cfg)), [{ account: D.id, released: 475, lots: 1 }]);
+  assert.equal((await s.api('GET', '/v1/me', null, D.api_key)).data.deferred, 0);
 });

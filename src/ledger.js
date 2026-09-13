@@ -40,6 +40,7 @@ export function payout(db, cfg, task, workerId) {
       db.prepare('INSERT INTO ledger (account_id, delta, kind, task_id, memo) VALUES (?, ?, ?, ?, ?)').run(
         workerId, deferred, 'payout_deferred', task.id, `${worker.defer_pct}% of task #${task.id} deferred`,
       );
+      db.prepare('INSERT INTO deferrals (account_id, task_id, sats) VALUES (?, ?, ?)').run(workerId, task.id, deferred);
     }
     if (fee > 0) move(db, PLATFORM_ID, fee, 'fee', task.id, `${cfg.feeBps / 100}% fee on task #${task.id}`);
     const unused = task.escrow - task.bounty;
@@ -73,4 +74,37 @@ export function slash(db, cfg, account) {
   );
   move(db, PLATFORM_ID, amount, 'slash', null, `slash from ${account.name}`);
   return amount;
+}
+
+const daysAgo = (now, days) => new Date(now.getTime() - days * 86_400_000).toISOString();
+
+/** Sats deferred at least `minDays` ago and not yet released. */
+export function releasableDeferred(db, cfg, accountId, now = new Date()) {
+  return db.prepare('SELECT COALESCE(SUM(sats), 0) AS sats, COUNT(*) AS lots FROM deferrals WHERE account_id = ? AND released_at IS NULL AND created_at <= ?')
+    .get(accountId, daysAgo(now, cfg.deferMinDays));
+}
+
+/** Move matured deferrals (older than `minDays`) into the spendable balance. Call inside tx(). */
+export function releaseDeferred(db, cfg, accountId, { minDays = cfg.deferMinDays, now = new Date(), memo = 'matured deferral released' } = {}) {
+  const lots = db.prepare('SELECT * FROM deferrals WHERE account_id = ? AND released_at IS NULL AND created_at <= ? ORDER BY id')
+    .all(accountId, daysAgo(now, minDays));
+  let total = 0;
+  for (const lot of lots) {
+    db.prepare('UPDATE deferrals SET released_at = ? WHERE id = ?').run(now.toISOString(), lot.id);
+    total += lot.sats;
+  }
+  if (total > 0) {
+    db.prepare('UPDATE accounts SET deferred = deferred - ? WHERE id = ?').run(total, accountId);
+    move(db, accountId, total, 'deferred_release', null, `${lots.length} lot(s): ${memo}`);
+  }
+  return { released: total, lots: lots.length };
+}
+
+/** Anything still deferred after `deferMaxDays` is released whether or not the worker asked. Call inside tx(). */
+export function autoReleaseDeferred(db, cfg, now = new Date()) {
+  const accounts = db.prepare('SELECT DISTINCT account_id FROM deferrals WHERE released_at IS NULL AND created_at <= ?').all(daysAgo(now, cfg.deferMaxDays));
+  return accounts.map((row) => ({
+    account: row.account_id,
+    ...releaseDeferred(db, cfg, row.account_id, { minDays: cfg.deferMaxDays, now, memo: `held ${cfg.deferMaxDays} days, released automatically` }),
+  }));
 }

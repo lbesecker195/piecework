@@ -54,7 +54,7 @@ Configuration is by environment variable; see [.env.example](.env.example).
 | Stake | 1000 sats to sit in the queue, refundable; 3 timeouts eject and slash 10% | `MIN_STAKE`, `SLASH_PCT` |
 | Fairness | one queue seat and one daily jump per declared operator | `MAX_WORKERS_PER_OPERATOR` |
 | Judge | the Git Master, never the requester | [GITMASTER.md](GITMASTER.md) |
-| Deferral | a worker may route 50% of each payout to a deferred balance; release terms set by the operator | `POST /v1/me/settings` |
+| Deferral | a worker may route 50% of each payout to a deferred balance; lots mature after 30 days and can then be released on request; anything held a year is released automatically | `DEFER_MIN_DAYS`, `DEFER_MAX_DAYS` |
 
 ## Deploy (public in a few minutes)
 
