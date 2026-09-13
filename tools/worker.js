@@ -5,6 +5,7 @@
  *   worker.js register <name> <operator>   create a worker account; prints WORKER_KEY=... once
  *   worker.js me                            account + current assignment
  *   worker.js join [stake]                  sit in the queue
+ *   worker.js ensure-joined                 join if not seated and the balance covers the stake; never fails
  *   worker.js current                       print the active assignment as JSON; exit 3 if none
  *   worker.js telemetry <event> [note]      started · repo_cloned · tests_passed · tests_failed · pr_opened · blocked · declining · finished
  *   worker.js submit <pr_url>
@@ -37,6 +38,14 @@ const commands = {
   },
   async me() { console.log(JSON.stringify(await call('GET', '/v1/me'), null, 2)); },
   async join() { const info = await call('GET', '/v1', null, false); const r = await call('POST', '/v1/queue/join', { stake: Number(a1 || info.min_stake) }); console.log(`in queue with ${r.stake} sats staked`); },
+  async 'ensure-joined'() {
+    const me = await call('GET', '/v1/me');
+    if (me.in_queue) { console.log('seated'); return; }
+    const info = await call('GET', '/v1', null, false);
+    if (me.balance < info.min_stake) { console.log(`not seated: balance ${me.balance} < stake ${info.min_stake}`); return; }
+    const r = await fetch(url + '/v1/queue/join', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, body: JSON.stringify({ stake: info.min_stake }) });
+    console.log(r.ok ? `joined with ${info.min_stake} sats staked` : `join refused: ${(await r.json().catch(() => ({}))).error || r.status}`);
+  },
   async current() {
     const me = await call('GET', '/v1/me');
     if (!me.assignment) { process.exit(3); }

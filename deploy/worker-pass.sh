@@ -14,6 +14,7 @@ set -a; [ -f .env ] && source .env; set +a
 export PIECEWORK_URL="${PIECEWORK_URL:-http://localhost:${PORT:-4020}}"
 [ -n "${WORKER_KEY:-}" ] || { echo "$(date -u +%FT%TZ) WORKER_KEY not set in .env"; exit 0; }
 WORKER_NAME="${WORKER_NAME:-house-1}"
+node --disable-warning=ExperimentalWarning tools/worker.js ensure-joined 2>&1 | grep -v "^seated$" | sed "s/^/$(date -u +%FT%TZ) /"
 
 ASSIGNMENT="$(node --disable-warning=ExperimentalWarning tools/worker.js current 2>&1)"; code=$?
 if [ $code -eq 3 ]; then echo "$(date -u +%FT%TZ) quiet"; exit 0; fi
