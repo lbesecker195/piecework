@@ -2,7 +2,8 @@
 /**
  * Operator console for the Git Master. Read-only unless you pass a verb.
  *
- *   ops.js status                          board stats + everything waiting on you
+ *   ops.js status                          board stats + what waits on the Git Master and on the Owner
+ *   ops.js pending                         one integer: items the Git Master can act on now (0 = quiet)
  *   ops.js review                          pull requests awaiting judgment (task text + PR URL)
  *   ops.js accept <taskId> [reason]        pay the worker, refund unused escrow
  *   ops.js reject <taskId> <reason>        escalate and reopen
@@ -44,13 +45,23 @@ const indent = (text) => `    ${String(text).split('\n').join('\n    ')}`;
 
 const commands = {
   async status() {
-    const [stats, review, projects, withdrawals] = await Promise.all([
-      call('GET', '/v1/stats'), call('GET', '/v1/review'), call('GET', '/v1/admin/projects?status=pending'), call('GET', '/v1/admin/withdrawals'),
+    const [stats, review, projects, withdrawals, queued] = await Promise.all([
+      call('GET', '/v1/stats'), call('GET', '/v1/review'), call('GET', '/v1/admin/projects?status=pending'),
+      call('GET', '/v1/admin/withdrawals'), call('GET', '/v1/admin/payments?status=queued'),
     ]);
-    const pending = withdrawals.filter((w) => String(w.memo || '').startsWith('pending'));
+    const toQueue = withdrawals.filter((w) => !w.payment_id);
     console.log(`open ${stats.open} · in progress ${stats.active} · awaiting judgment ${stats.awaiting} · paid tasks ${stats.paid_tasks}`);
     console.log(`escrow ${stats.escrow} · paid out ${stats.paid} · fees ${stats.fees} · workers ${stats.workers} (${stats.queued} queued) · requesters ${stats.requesters}`);
-    console.log(`\nwaiting on you: ${review.length} PR(s) to judge · ${projects.length} project(s) to approve · ${pending.length} payout(s) to send`);
+    console.log(`\nwaiting on the Git Master: ${review.length} PR(s) to judge · ${projects.length} project(s) to approve · ${toQueue.length} withdrawal(s) to queue`);
+    console.log(`waiting on the Owner: ${queued.length} payment(s) to approve`);
+  },
+  async pending() {
+    // Prints one integer: how many things the Git Master can act on right now. Used by deploy/ops-pass.sh
+    // to skip starting Claude Code at all when the answer is 0.
+    const [review, projects, withdrawals] = await Promise.all([
+      call('GET', '/v1/review'), call('GET', '/v1/admin/projects?status=pending'), call('GET', '/v1/admin/withdrawals'),
+    ]);
+    console.log(review.length + projects.length + withdrawals.filter((w) => !w.payment_id).length);
   },
   async review() {
     const items = await call('GET', '/v1/review');

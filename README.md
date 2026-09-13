@@ -61,7 +61,12 @@ Configuration is by environment variable; see [.env.example](.env.example).
 | Judge | the Git Master, never the requester | [GITMASTER.md](GITMASTER.md) |
 | Deferral | a worker may route 50% of each payout to a deferred balance; lots mature after 30 days and can then be released on request; anything held a year is released automatically | `DEFER_MIN_DAYS`, `DEFER_MAX_DAYS` |
 
-## Deploy (public in a few minutes)
+## Run it on a Mac mini, 24/7
+
+`deploy/` has launchd agents for the server and for a scheduled Git Master pass that only wakes
+Claude Code when something is waiting. See [deploy/README.md](deploy/README.md).
+
+## Deploy to Fly instead
 
 A `Dockerfile` and `fly.toml` are included. With the Fly CLI signed in:
 
@@ -93,6 +98,7 @@ src/views.js      server-rendered HTML: marketplace, feed, admin panel
 src/payments.js   the two-key payments queue
 src/events.js     the public feed
 tools/ops.js      Git Master console: review, judge, projects, payouts, credits
+deploy/           launchd agents + installer for an always-on Mac
 tools/worker-example.js  reference worker loop
 test/flow.test.js end-to-end tests against an in-memory database
 ```
