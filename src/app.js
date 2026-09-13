@@ -4,7 +4,8 @@ import { dirname, join as joinPath } from 'node:path';
 import express from 'express';
 import { PLATFORM_ID, publicAccount, q } from './db.js';
 import { accountFromRequest, adminRole, cookie, requireAccount, requireGitMaster, requireOwner } from './auth.js';
-import { emit, recent } from './events.js';
+import { emit, recent, setAnalytics } from './events.js';
+import { createAnalytics } from './analytics.js';
 import { approvePayment, listPayments, pendingWithdrawals, queueCredit, queuePayout, rejectPayment } from './payments.js';
 import { lockEscrow, move, payout, refundEscrow, releasableDeferred, releaseDeferred, stake, unstake } from './ledger.js';
 import { decline, dispatch, judge, submit } from './dispatch.js';
@@ -15,8 +16,13 @@ import * as views from './views.js';
 const ROOT = joinPath(dirname(fileURLToPath(import.meta.url)), '..');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function createApp({ db, cfg, rng = Math.random }) {
+const TELEMETRY_EVENTS = ['started', 'repo_cloned', 'tests_passed', 'tests_failed', 'pr_opened', 'blocked', 'declining', 'finished'];
+const REPORTING_THRESHOLD = 2;
+
+export function createApp({ db, cfg, rng = Math.random, analytics = null }) {
   const app = express();
+  const stats_ = analytics || createAnalytics(cfg);
+  setAnalytics(stats_);
   app.disable('x-powered-by');
   app.use(express.json({ limit: '64kb' }));
   app.use(express.urlencoded({ extended: false, limit: '64kb' }));
@@ -31,6 +37,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
     turnaroundMin: cfg.turnaroundMin,
     feePct: cfg.feeBps / 100,
     minBounty: cfg.minBounty,
+    analytics: cfg.ssaUid ? { url: cfg.ssaUrl, uid: cfg.ssaUid } : null,
   });
 
   const adminAction = (roles, fn) => (req, res) => {
@@ -168,6 +175,8 @@ export function createApp({ db, cfg, rng = Math.random }) {
       id: a.id, worker: nameOf(a.worker_id), via: a.via, status: a.status, assigned_at: a.assigned_at, expires_at: a.expires_at,
       seconds_left: a.status === 'active' ? secondsLeft(a.expires_at) : 0, pr_url: a.pr_url, pr_state: a.pr_state,
       pr_merged: Boolean(a.pr_merged), submitted_at: a.submitted_at, judged_at: a.judged_at, verdict_reason: a.verdict_reason,
+      reporting: a.telemetry >= REPORTING_THRESHOLD,
+      telemetry: db.prepare('SELECT event, note, created_at FROM telemetry WHERE assignment_id = ? ORDER BY id').all(a.id),
     }));
     return { ...task, requester: nameOf(task.requester_id), assignments };
   }
@@ -185,9 +194,9 @@ export function createApp({ db, cfg, rng = Math.random }) {
   function reviewQueue() {
     return db.prepare(`
       SELECT t.id, t.repo, t.title, t.body, t.bounty, t.rounds, a.id AS assignment_id, a.pr_url, a.pr_state, a.pr_merged, a.submitted_at,
-             w.name AS worker, w.github AS worker_github
+             (a.telemetry >= ${REPORTING_THRESHOLD}) AS reporting, w.name AS worker, w.github AS worker_github
       FROM tasks t JOIN assignments a ON a.task_id = t.id AND a.status = 'submitted' JOIN accounts w ON w.id = a.worker_id
-      WHERE t.status = 'submitted' ORDER BY a.submitted_at`).all();
+      WHERE t.status = 'submitted' ORDER BY (a.telemetry >= ${REPORTING_THRESHOLD}) DESC, a.submitted_at`).all();
   }
 
   function stats() {
@@ -216,10 +225,10 @@ export function createApp({ db, cfg, rng = Math.random }) {
       active: db.prepare("SELECT t.id, t.title, t.bounty, a.via, a.expires_at, w.name AS worker FROM assignments a JOIN tasks t ON t.id = a.task_id JOIN accounts w ON w.id = a.worker_id WHERE a.status = 'active' ORDER BY a.expires_at").all()
         .map((r) => ({ ...r, seconds_left: secondsLeft(r.expires_at) })),
       awaiting: db.prepare("SELECT t.id, t.title, t.bounty, a.pr_url, a.pr_merged, a.submitted_at, w.name AS worker FROM assignments a JOIN tasks t ON t.id = a.task_id JOIN accounts w ON w.id = a.worker_id WHERE a.status = 'submitted' AND t.status = 'submitted' ORDER BY a.submitted_at").all(),
-      queue: db.prepare("SELECT id, name, operator, stake, jump_armed_on FROM accounts WHERE kind = 'worker' AND in_queue = 1 ORDER BY queue_pos").all()
+      queue: db.prepare("SELECT id, name, operator, stake, jump_armed_on, telemetry_count FROM accounts WHERE kind = 'worker' AND in_queue = 1 ORDER BY queue_pos").all()
         .map((w) => ({ ...w, busy: busy.has(w.id), armed: w.jump_armed_on === today() })),
       payouts: db.prepare("SELECT l.delta, l.created_at, l.task_id AS id, t.title, w.name AS worker FROM ledger l JOIN tasks t ON t.id = l.task_id JOIN accounts w ON w.id = l.account_id WHERE l.kind = 'payout' ORDER BY l.id DESC LIMIT 10").all(),
-      standings: db.prepare("SELECT name, completed, earned FROM accounts WHERE kind = 'worker' AND completed > 0 ORDER BY earned DESC, completed DESC LIMIT 10").all(),
+      standings: db.prepare("SELECT name, completed, earned, telemetry_count FROM accounts WHERE kind = 'worker' AND completed > 0 ORDER BY earned DESC, completed DESC LIMIT 10").all(),
     };
   }
 
@@ -230,7 +239,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
     max_workers_per_operator: cfg.maxWorkersPerOperator,
     flow: 'request a project (POST /v1/projects) → the Git Master approves → post tasks against it (POST /v1/tasks)',
     endpoints: ['POST /v1/accounts', 'GET /v1/projects', 'POST /v1/projects', 'GET /v1/admin/projects (Git Master)', 'POST /v1/admin/projects/:id/approve|decline (Git Master)', 'GET /v1/me', 'POST /v1/me/settings', 'POST /v1/deferred/release', 'POST /v1/faucet', 'POST /v1/tasks', 'GET /v1/tasks', 'GET /v1/tasks/:id', 'POST /v1/tasks/:id/cancel',
-      'POST /v1/queue/join', 'POST /v1/queue/leave', 'POST /v1/queue/jump', 'GET /v1/queue', 'GET /v1/assignments/current?wait=25',
+      'POST /v1/queue/join', 'POST /v1/queue/leave', 'POST /v1/queue/jump', 'GET /v1/queue', 'GET /v1/assignments/current?wait=25', 'POST /v1/telemetry', 'GET /v1/telemetry/events',
       'POST /v1/assignments/:id/submit', 'POST /v1/assignments/:id/decline', 'POST /v1/withdraw', 'GET /v1/stats', 'GET /v1/feed', 'GET /v1/review (admin)', 'POST /v1/tasks/:id/judge (admin)', 'GET /v1/admin/withdrawals (admin)', 'GET|POST /v1/admin/payments (admin)', 'POST /v1/admin/payments/:id/approve|reject (Owner)'],
   }));
   app.post('/v1/accounts', (req, res) => {
@@ -344,6 +353,41 @@ export function createApp({ db, cfg, rng = Math.random }) {
     submit(db, a, requireString(req.body?.pr_url, 'pr_url', { max: 300 }));
     res.json({ status: 'submitted', task: taskView(q.task(db, a.task_id)), note: 'the Git Master will judge; watch GET /v1/tasks/:id' });
   });
+  app.post('/v1/telemetry', auth('worker'), (req, res) => {
+    const body = req.body || {};
+    const event = String(body.event || '');
+    if (!TELEMETRY_EVENTS.includes(event)) throw new HttpError(400, `event must be one of ${TELEMETRY_EVENTS.join(', ')}`);
+    let assignment = body.assignment_id
+      ? q.assignment(db, positiveInt(body.assignment_id, 'assignment_id'))
+      : q.activeAssignmentFor(db, req.account.id) || db.prepare("SELECT * FROM assignments WHERE worker_id = ? AND status = 'submitted' ORDER BY id DESC LIMIT 1").get(req.account.id);
+    if (!assignment || assignment.worker_id !== req.account.id) throw new HttpError(404, 'no such assignment of yours (pass assignment_id, or have one active)');
+    if (!['active', 'submitted'].includes(assignment.status)) throw new HttpError(409, `assignment is ${assignment.status}; telemetry closes with it`);
+    const last = db.prepare('SELECT created_at FROM telemetry WHERE assignment_id = ? ORDER BY id DESC LIMIT 1').get(assignment.id);
+    if (last) {
+      const gap = Date.now() - new Date(last.created_at).getTime();
+      if (gap < cfg.telemetryMinGapMs) {
+        res.set('Retry-After', String(Math.ceil((cfg.telemetryMinGapMs - gap) / 1000)));
+        throw new HttpError(429, `one telemetry event per ${cfg.telemetryMinGapMs / 1000}s per assignment; batch what you can`);
+      }
+    }
+    const note = body.note ? String(body.note).replace(/\s+/g, ' ').trim().slice(0, 140) : null;
+    const count = tx(db, () => {
+      db.prepare('INSERT INTO telemetry (account_id, assignment_id, event, note) VALUES (?, ?, ?, ?)').run(req.account.id, assignment.id, event, note);
+      db.prepare('UPDATE assignments SET telemetry = telemetry + 1 WHERE id = ?').run(assignment.id);
+      db.prepare('UPDATE accounts SET telemetry_count = telemetry_count + 1 WHERE id = ?').run(req.account.id);
+      return q.assignment(db, assignment.id).telemetry;
+    });
+    stats_.ping(`worker_${event}`, { sid: `assignment-${assignment.id}`, assignment: assignment.id, task: assignment.task_id, via: assignment.via, project: `${cfg.ssaProject}-workers` });
+    const reporting = count >= REPORTING_THRESHOLD;
+    res.status(201).json({
+      recorded: event, assignment_id: assignment.id, events_on_assignment: count, reporting,
+      incentive: reporting
+        ? 'this assignment is marked reporting: it is judged ahead of non-reporting submissions and your account carries the 📡 badge'
+        : `one more event (${REPORTING_THRESHOLD} total) marks this assignment reporting: judged first, 📡 badge on the board`,
+      analytics: stats_.enabled ? 'forwarded to SeriouslySimpleAnalytics' : 'recorded locally (analytics not configured)',
+    });
+  });
+  app.get('/v1/telemetry/events', (_req, res) => res.json({ events: TELEMETRY_EVENTS, reporting_threshold: REPORTING_THRESHOLD, min_gap_ms: cfg.telemetryMinGapMs }));
   app.post('/v1/assignments/:id/decline', auth('worker'), (req, res) => {
     const a = ownAssignment(req);
     decline(db, a);
@@ -389,6 +433,7 @@ export function createApp({ db, cfg, rng = Math.random }) {
 
   // ------------------------------------------------------------------ HTML
   app.get('/agents.md', (_req, res) => res.type('text/markdown').send(readFileSync(joinPath(ROOT, 'AGENTS.md'), 'utf8')));
+  app.get('/llms.txt', (_req, res) => res.type('text/plain').send(views.llmsTxt(cfg)));
   app.get('/', (req, res) => res.send(views.board(boardData(), ctxFor(req))));
   app.get('/join', (req, res) => res.send(views.join(ctxFor(req))));
   app.post('/join', (req, res) => {

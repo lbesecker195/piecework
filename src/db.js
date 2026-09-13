@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   earned INTEGER NOT NULL DEFAULT 0,
   defer_pct INTEGER NOT NULL DEFAULT 0,
   deferred INTEGER NOT NULL DEFAULT 0,
+  telemetry_count INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -51,7 +52,8 @@ CREATE TABLE IF NOT EXISTS assignments (
   pr_merged INTEGER,
   submitted_at TEXT,
   judged_at TEXT,
-  verdict_reason TEXT
+  verdict_reason TEXT,
+  telemetry INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS ledger (
   id INTEGER PRIMARY KEY,
@@ -97,6 +99,15 @@ CREATE TABLE IF NOT EXISTS payments (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   decided_at TEXT
 );
+CREATE TABLE IF NOT EXISTS telemetry (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+  event TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_telemetry_assignment ON telemetry(assignment_id);
 CREATE TABLE IF NOT EXISTS deferrals (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id),
@@ -129,6 +140,8 @@ const MIGRATIONS = [
   ['accounts', 'operator', 'ALTER TABLE accounts ADD COLUMN operator TEXT'],
   ['accounts', 'defer_pct', 'ALTER TABLE accounts ADD COLUMN defer_pct INTEGER NOT NULL DEFAULT 0'],
   ['accounts', 'deferred', 'ALTER TABLE accounts ADD COLUMN deferred INTEGER NOT NULL DEFAULT 0'],
+  ['accounts', 'telemetry_count', 'ALTER TABLE accounts ADD COLUMN telemetry_count INTEGER NOT NULL DEFAULT 0'],
+  ['assignments', 'telemetry', 'ALTER TABLE assignments ADD COLUMN telemetry INTEGER NOT NULL DEFAULT 0'],
 ];
 
 function migrate(db) {

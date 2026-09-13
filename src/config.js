@@ -24,4 +24,9 @@ export const config = Object.freeze({
   gitMasterKey: env.GIT_MASTER_KEY || null,
   ownerKey: env.OWNER_KEY || null,
   githubToken: env.GITHUB_TOKEN || null,
+  // SeriouslySimpleAnalytics: one GET per event, fire and forget. Empty uid disables it.
+  ssaUid: env.SSA_UID || null,
+  ssaUrl: (env.SSA_URL || 'https://seriouslysimpleanalytics.com').replace(/\/$/, ''),
+  ssaProject: env.SSA_PROJECT || 'piecework',
+  telemetryMinGapMs: num('TELEMETRY_MIN_GAP_MS', 10_000),
 });

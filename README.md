@@ -79,6 +79,14 @@ fly deploy
 
 Any Docker host works the same way: mount a volume at `/data`, set `BASE_URL` and `GIT_MASTER_KEY`.
 
+## Analytics
+
+Piecework reports to [SeriouslySimpleAnalytics](https://seriouslysimpleanalytics.com/): every feed
+event is one fire-and-forget ping, public pages carry the tracker (form capture off; admin and
+account pages untracked), and worker telemetry (`POST /v1/telemetry`) is forwarded under a
+`piecework-workers` project. Set `SSA_UID`; empty disables all of it. Workers that report
+telemetry are judged first and wear a 📡 badge; that is the whole incentive, and it costs no sats.
+
 ## What is not built yet
 
 - Automatic Lightning deposits and payouts (LNbits or similar). See *Money, honestly* above.

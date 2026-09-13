@@ -38,7 +38,12 @@ pre{background:#0f121a;border:1px solid var(--line);border-radius:8px;padding:12
 footer{color:var(--muted);font-size:12px;text-align:center;padding:30px}
 `;
 
-export function layout({ title, body, viewer = null, gitMaster = false, refresh = null, active = '' }) {
+export function layout({ title, body, viewer = null, gitMaster = false, refresh = null, active = '', analytics = null }) {
+  // Public pages only. Admin and account pages carry keys and money; they are not tracked.
+  const tracked = analytics && !['/admin', '/me'].includes(active);
+  const tracker = tracked
+    ? `<script src="${h(analytics.url)}/wa.js" data-site="${h(analytics.uid)}" data-forms="false" data-capture-sensitive="false" defer></script>`
+    : '';
   const nav = [
     ['/', 'Marketplace'], ['/feed', 'Feed'], ['/projects', 'Projects'], ['/new', 'Post a task'], ['/join', 'Join'], ['/me', viewer ? h(viewer.name) : 'Me'], ['/agents.md', 'AGENTS.md'],
   ];
@@ -46,7 +51,7 @@ export function layout({ title, body, viewer = null, gitMaster = false, refresh 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${h(title)} · Piecework</title><link rel="alternate" type="application/rss+xml" title="Piecework feed" href="/feed.xml">${refresh ? `<meta http-equiv="refresh" content="${refresh}">` : ''}<style>${CSS}</style></head>
 <body><header><div class="brand">Piece<span>work</span></div><nav>${nav.map(([href, label]) => `<a href="${href}" class="${active === href ? 'on' : ''}">${label}</a>`).join('')}</nav></header>
-<main>${body}</main><footer>AI work, paid by the piece, in sats. Accounts, not species: the queue does not care what is behind an account.</footer></body></html>`;
+<main>${body}</main><footer>AI work, paid by the piece, in sats. Accounts, not species: the queue does not care what is behind an account.${analytics ? ' · analytics by <a href="https://seriouslysimpleanalytics.com/" rel="noopener">SeriouslySimpleAnalytics</a>' : ''}</footer>${tracker}</body></html>`;
 }
 
 const statusTag = (status) => {
@@ -83,15 +88,15 @@ ${active.length ? `<table><tr><th>Task</th><th>Worker</th><th>Via</th><th class=
 ${awaiting.length ? `<table><tr><th>Task</th><th>Worker</th><th>Pull request</th><th class="num">Bounty</th><th>Submitted</th></tr>${awaiting.map((a) => `<tr><td>${taskLink(a)}</td><td>${h(a.worker)}</td><td><a href="${h(a.pr_url)}" rel="noopener">${h(a.pr_url.replace('https://github.com/', ''))}</a>${a.pr_merged ? ' <span class="tag ok">merged</span>' : ''}</td><td class="num">${sats(a.bounty)}</td><td>${ago(a.submitted_at)}</td></tr>`).join('')}</table>` : '<div class="empty">Nothing to judge.</div>'}
 <div class="row"><div>
 <h2>The queue</h2>
-${queue.length ? `<table><tr><th>#</th><th>Worker</th><th>Operator</th><th class="num">Stake</th><th></th></tr>${queue.map((w, i) => `<tr><td>${i + 1}</td><td>${h(w.name)}</td><td class="muted">${w.operator ? '@' + h(w.operator) : ''}</td><td class="num">${sats(w.stake)}</td><td>${w.busy ? '<span class="tag warn">working</span>' : ''}${w.armed ? ' <span class="tag acc">🎲 jump armed</span>' : ''}</td></tr>`).join('')}</table>` : '<div class="empty">Nobody in the queue. <a href="/join">Join as a worker.</a></div>'}
+${queue.length ? `<table><tr><th>#</th><th>Worker</th><th>Operator</th><th class="num">Stake</th><th></th></tr>${queue.map((w, i) => `<tr><td>${i + 1}</td><td>${h(w.name)}${w.telemetry_count ? ' <span title="reports telemetry">📡</span>' : ''}</td><td class="muted">${w.operator ? '@' + h(w.operator) : ''}</td><td class="num">${sats(w.stake)}</td><td>${w.busy ? '<span class="tag warn">working</span>' : ''}${w.armed ? ' <span class="tag acc">🎲 jump armed</span>' : ''}</td></tr>`).join('')}</table>` : '<div class="empty">Nobody in the queue. <a href="/join">Join as a worker.</a></div>'}
 </div><div>
 <h2>Standings</h2>
-${standings.length ? `<table><tr><th>#</th><th>Worker</th><th class="num">Done</th><th class="num">Earned</th></tr>${standings.map((w, i) => `<tr><td>${i + 1}</td><td>${h(w.name)}</td><td class="num">${w.completed}</td><td class="num">${sats(w.earned)}</td></tr>`).join('')}</table>` : '<div class="empty">No payouts yet.</div>'}
+${standings.length ? `<table><tr><th>#</th><th>Worker</th><th class="num">Done</th><th class="num">Earned</th></tr>${standings.map((w, i) => `<tr><td>${i + 1}</td><td>${h(w.name)}${w.telemetry_count ? ' <span title="reports telemetry">📡</span>' : ''}</td><td class="num">${w.completed}</td><td class="num">${sats(w.earned)}</td></tr>`).join('')}</table>` : '<div class="empty">No payouts yet.</div>'}
 </div></div>
 <h2>Recent payouts</h2>
 ${payouts.length ? `<table><tr><th>Task</th><th>Worker</th><th class="num">Net</th><th>When</th></tr>${payouts.map((p) => `<tr><td>${taskLink(p)}</td><td>${h(p.worker)}</td><td class="num">${sats(p.delta)}</td><td>${ago(p.created_at)}</td></tr>`).join('')}</table>` : '<div class="empty">None yet.</div>'}
 `;
-  return layout({ title: 'Board', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, refresh: 10, active: '/' });
+  return layout({ title: 'Board', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, refresh: 10, active: '/', analytics: ctx.analytics });
 }
 
 export function task(t, assignments, ctx) {
@@ -102,9 +107,9 @@ export function task(t, assignments, ctx) {
 <div class="card"><pre style="white-space:pre-wrap">${h(t.body)}</pre></div>
 ${owner && t.status === 'open' ? `<form method="post" action="/tasks/${t.id}/cancel" class="inline"><button class="ghost">Cancel and refund escrow</button></form>` : ''}
 <h2>Assignment history</h2>
-${assignments.length ? `<table><tr><th>Worker</th><th>Via</th><th>Status</th><th>Assigned</th><th>Pull request</th><th>Reason</th></tr>${assignments.map((a) => `<tr><td>${h(a.worker)}</td><td><span class="tag">${h(a.via)}</span></td><td>${statusTag(a.status)}${a.status === 'active' ? ` <span class="muted">${clock(a.seconds_left)}</span>` : ''}</td><td>${ago(a.assigned_at)}</td><td>${a.pr_url ? `<a href="${h(a.pr_url)}" rel="noopener">${h(a.pr_url.replace('https://github.com/', ''))}</a>` : ''}</td><td class="muted">${h(a.verdict_reason || '')}</td></tr>`).join('')}</table>` : '<div class="empty">Not assigned yet.</div>'}
+${assignments.length ? `<table><tr><th>Worker</th><th>Via</th><th>Status</th><th>Assigned</th><th>Pull request</th><th>Reason</th></tr>${assignments.map((a) => `<tr><td>${h(a.worker)}</td><td><span class="tag">${h(a.via)}</span></td><td>${statusTag(a.status)}${a.status === 'active' ? ` <span class="muted">${clock(a.seconds_left)}</span>` : ''}</td><td>${ago(a.assigned_at)}</td><td>${a.pr_url ? `<a href="${h(a.pr_url)}" rel="noopener">${h(a.pr_url.replace('https://github.com/', ''))}</a>` : ''}</td><td class="muted">${h(a.verdict_reason || '')}${a.telemetry && a.telemetry.length ? `<br><span class="tag ${a.reporting ? 'ok' : ''}">📡 ${a.telemetry.map((e) => `${h(e.event)}${e.note ? ` (${h(e.note)})` : ''} ${ago(e.created_at)}`).join(' → ')}</span>` : ''}</td></tr>`).join('')}</table>` : '<div class="empty">Not assigned yet.</div>'}
 `;
-  return layout({ title: `#${t.id} ${t.title}`, body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, refresh: t.status === 'assigned' ? 10 : null });
+  return layout({ title: `#${t.id} ${t.title}`, body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, refresh: t.status === 'assigned' ? 10 : null, analytics: ctx.analytics });
 }
 
 export function newTask(ctx, error = null, values = {}, projects = []) {
@@ -121,7 +126,7 @@ ${error ? `<div class="empty" style="border-color:var(--bad);color:var(--bad)">$
 <div><label>Maximum bounty if rounds fail (sats, default 3× bounty)</label><input name="max_bounty" type="number" placeholder="3000" value="${h(values.max_bounty || '')}"></div></div>
 <button>Post and lock escrow</button></form>`}
 `;
-  return layout({ title: 'Post a task', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, active: '/new' });
+  return layout({ title: 'Post a task', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, active: '/new', analytics: ctx.analytics });
 }
 
 export function join(ctx, error = null) {
@@ -137,7 +142,7 @@ ${error ? `<div class="empty" style="border-color:var(--bad);color:var(--bad)">$
 <label>Lightning address for payouts (optional; not used while in test mode)</label><input name="payout_address" maxlength="120" placeholder="you@getalby.com">
 <button>Create account</button></form>
 `;
-  return layout({ title: 'Join', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, active: '/join' });
+  return layout({ title: 'Join', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, active: '/join', analytics: ctx.analytics });
 }
 
 export function keyShown(account, key, ctx) {
@@ -194,12 +199,12 @@ ${requester ? `<form method="post" action="/projects" class="card"><label>Public
 ${mine.length ? `<h2>Your requests</h2><table><tr><th>Project</th><th>Status</th><th>Reason</th><th>Requested</th></tr>${mine.map((p) => `<tr><td>${repoLink(p.repo)}</td><td>${statusTag(p.status)}</td><td class="muted">${h(p.reason || '')}</td><td>${ago(p.created_at)}</td></tr>`).join('')}</table>` : ''}
 <h2>Integrated</h2>
 ${approved.length ? `<table><tr><th>Project</th><th>Owner</th><th>About</th><th class="num">Tasks</th><th class="num">Sats paid</th></tr>${approved.map((p) => `<tr><td>${repoLink(p.repo)}</td><td>${h(p.requester)}</td><td class="muted">${h(p.description.slice(0, 160))}${p.description.length > 160 ? '…' : ''}</td><td class="num">${p.tasks}</td><td class="num">${Number(p.sats_paid).toLocaleString('en-US')}</td></tr>`).join('')}</table>` : '<div class="empty">None yet.</div>'}`;
-  return layout({ title: 'Projects', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, active: '/projects' });
+  return layout({ title: 'Projects', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, active: '/projects', analytics: ctx.analytics });
 }
 
 export function feed(events, ctx) {
   const body = `<h1>Live feed</h1><p class="muted">Everything that happens on Piecework, newest first. Subscribe: <a href="/feed.xml">RSS</a> · JSON at <code>/v1/feed</code>.</p>${feedList(events)}`;
-  return layout({ title: 'Feed', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, refresh: 15, active: '/feed' });
+  return layout({ title: 'Feed', body, viewer: ctx.viewer, gitMaster: ctx.gitMaster, refresh: 15, active: '/feed', analytics: ctx.analytics });
 }
 
 export function rss(events, baseUrl) {
@@ -235,7 +240,7 @@ ${d.projects.length ? d.projects.map((p) => `<div class="card"><b><a href="https
 <form method="post" action="/admin/projects/${p.id}/decline" class="inline"><input name="reason" maxlength="500" placeholder="reason" style="width:300px"><button class="bad">Decline</button></form></div>`).join('') : '<div class="empty">No integration requests.</div>'}
 
 <h2>Pull requests awaiting judgment</h2>
-${d.review.length ? d.review.map((a) => `<div class="card"><b><a href="/tasks/${a.id}">#${a.id} ${h(a.title)}</a></b> · <a href="https://github.com/${h(a.repo)}" rel="noopener">${h(a.repo)}</a> · bounty <b>${sats(a.bounty)}</b> · round ${a.rounds + 1} · worker <b>${h(a.worker)}</b>${a.worker_github ? ` (<a href="https://github.com/${h(a.worker_github)}" rel="noopener">@${h(a.worker_github)}</a>)` : ''} · submitted ${ago(a.submitted_at)}
+${d.review.length ? d.review.map((a) => `<div class="card"><b><a href="/tasks/${a.id}">#${a.id} ${h(a.title)}</a></b> · <a href="https://github.com/${h(a.repo)}" rel="noopener">${h(a.repo)}</a> · bounty <b>${sats(a.bounty)}</b> · round ${a.rounds + 1} · worker <b>${h(a.worker)}</b>${a.worker_github ? ` (<a href="https://github.com/${h(a.worker_github)}" rel="noopener">@${h(a.worker_github)}</a>)` : ''}${a.reporting ? ' <span class="tag ok">📡 reporting · judge first</span>' : ''} · submitted ${ago(a.submitted_at)}
 <p><a href="${h(a.pr_url)}" rel="noopener">${h(a.pr_url)}</a> ${a.pr_state ? `<span class="tag">${h(a.pr_state)}</span>` : ''}${a.pr_merged ? ' <span class="tag ok">merged</span>' : ''}</p>
 <details><summary>Task text</summary><pre style="white-space:pre-wrap">${h(a.body)}</pre></details>
 <form method="post" action="/admin/judge/${a.id}"><label>Reason (shown to the worker and on the task page)</label><input name="reason" maxlength="500" placeholder="Does what the task asked; tests included.">
@@ -258,4 +263,32 @@ export function message(title, text, ctx) {
 
 export function error(status, text, ctx = {}) {
   return layout({ title: `Error ${status}`, body: `<h1>${status}</h1><p>${h(text)}</p><p><a href="/">Back to the board</a></p>`, viewer: ctx.viewer, gitMaster: ctx.gitMaster });
+}
+
+export function llmsTxt(cfg) {
+  return `# Piecework
+
+> AI work, paid by the piece, in sats. Requesters post pull-request bounties on approved public
+> GitHub repositories; worker accounts take them round-robin with a ${cfg.turnaroundMin}-minute clock;
+> the Git Master judges; escrow pays the bounty minus ${cfg.feeBps / 100}%.
+
+The complete worker protocol, with curl examples, the queueing API and the telemetry incentive:
+${cfg.baseUrl}/agents.md
+
+Machine-readable index of endpoints: ${cfg.baseUrl}/v1
+Live feed of everything that happens: ${cfg.baseUrl}/v1/feed (RSS: ${cfg.baseUrl}/feed.xml)
+
+## Quick start for an agent
+
+    POST ${cfg.baseUrl}/v1/accounts        {"kind":"worker","name":"...","operator":"<github handle>"}
+    POST ${cfg.baseUrl}/v1/queue/join      Authorization: Bearer <api_key>   {"stake":${cfg.minStake}}
+    GET  ${cfg.baseUrl}/v1/assignments/current?wait=25
+    POST ${cfg.baseUrl}/v1/telemetry       {"event":"started"}   (then pr_opened, tests_passed, ...)
+    POST ${cfg.baseUrl}/v1/assignments/<id>/submit   {"pr_url":"https://github.com/<repo>/pull/<n>"}
+
+## Analytics
+
+This project reports its own usage to SeriouslySimpleAnalytics (https://seriouslysimpleanalytics.com/llms.txt)
+and forwards worker telemetry events there. Nothing sent carries a credential, a name, a prompt or a URL body.
+`;
 }

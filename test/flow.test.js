@@ -9,12 +9,14 @@ import { config } from '../src/config.js';
 
 const GM = 'gm-test-key';
 const OWNER = 'owner-test-key';
-const cfg = { ...config, testMode: true, gitMasterKey: GM, ownerKey: OWNER, minStake: 100, minBounty: 10, faucetSats: 10000, turnaroundMin: 10, maxWorkersPerOperator: 1 };
+const cfg = { ...config, testMode: true, gitMasterKey: GM, ownerKey: OWNER, ssaUid: 'acct_test', telemetryMinGapMs: 0, minStake: 100, minBounty: 10, faucetSats: 10000, turnaroundMin: 10, maxWorkersPerOperator: 1 };
 const REPO = 'https://github.com/octo/demo';
 
 async function start() {
   const db = openDb(':memory:');
-  const app = createApp({ db, cfg });
+  const pings = [];
+  const analytics = { enabled: true, ping: (event, params) => { pings.push({ event, ...params }); return true; } };
+  const app = createApp({ db, cfg, analytics });
   const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const api = async (method, path, body, key) => {
@@ -37,7 +39,7 @@ async function start() {
     return (await api('POST', '/v1/tasks', { repo_url: REPO, title: 'Add a flag', body: 'Add --dry-run to the CLI', bounty, max_bounty }, R.api_key)).data;
   };
   const expireActive = () => db.prepare("UPDATE assignments SET expires_at = ? WHERE status = 'active'").run(new Date(Date.now() - 1000).toISOString());
-  return { db, api, account, fund, post, integrate, expireActive, close: () => new Promise((r) => server.close(r)) };
+  return { db, api, account, fund, post, integrate, expireActive, pings, close: () => new Promise((r) => server.close(r)) };
 }
 
 test('happy path: post, round-robin dispatch, submit, accept, payout minus fee, escrow refund', async (t) => {
@@ -312,4 +314,77 @@ test('the feed narrates the task lifecycle', async (t) => {
   const kinds = (await s.api('GET', '/v1/feed')).data.map((e) => e.kind).reverse();
   assert.deepEqual(kinds, ['queue_joined', 'project_requested', 'project_approved', 'task_posted', 'assigned', 'submitted', 'accepted']);
   assert.match((await s.api('GET', '/')).data, /Live feed/);
+});
+
+test('telemetry: vocabulary, rate gap, reporting flag, judge-first ordering, analytics forwarding', async (t) => {
+  const s = await start(); t.after(s.close);
+  const R = await s.account('requester', 'ada');
+  const A = await s.account('worker', 'alpha', 'op-a');
+  const B = await s.account('worker', 'beta', 'op-b');
+  for (const acc of [R, A, B]) await s.fund(acc);
+  await s.api('POST', '/v1/queue/join', { stake: 100 }, A.api_key);
+  await s.api('POST', '/v1/queue/join', { stake: 100 }, B.api_key);
+  const t1 = await s.post(R, 1000);
+  const t2 = await s.post(R, 1000);
+  dispatch(s.db, cfg, () => 0.99);                       // t1 -> A, t2 -> B
+  assert.equal((await s.api('GET', '/v1/telemetry/events')).data.reporting_threshold, 2);
+  assert.equal((await s.api('POST', '/v1/telemetry', { event: 'dancing' }, A.api_key)).status, 400);
+  assert.equal((await s.api('POST', '/v1/telemetry', { event: 'started' }, R.api_key)).status, 403);
+  const first = await s.api('POST', '/v1/telemetry', { event: 'started', note: 'cloning   octo/demo' }, A.api_key);
+  assert.deepEqual([first.status, first.data.reporting, first.data.events_on_assignment], [201, false, 1]);
+  const second = await s.api('POST', '/v1/telemetry', { event: 'pr_opened' }, A.api_key);
+  assert.deepEqual([second.status, second.data.reporting], [201, true]);
+  // A telemetry event cannot be posted against someone else's assignment.
+  const bAssignment = (await s.api('GET', '/v1/assignments/current', null, B.api_key)).data;
+  assert.equal((await s.api('POST', '/v1/telemetry', { event: 'started', assignment_id: bAssignment.id }, A.api_key)).status, 404);
+  // B (silent) submits first; A (reporting) submits second; A is judged first.
+  await s.api('POST', bAssignment.submit.url, { pr_url: `${REPO}/pull/2` }, B.api_key);
+  const aAssignment = (await s.api('GET', '/v1/me', null, A.api_key)).data.assignment;
+  await s.api('POST', aAssignment.submit.url, { pr_url: `${REPO}/pull/1` }, A.api_key);
+  const review = (await s.api('GET', '/v1/review', null, GM)).data;
+  assert.deepEqual(review.map((r) => [r.worker, Boolean(r.reporting)]), [['alpha', true], ['beta', false]]);
+  const task = (await s.api('GET', `/v1/tasks/${t1.id}`)).data;
+  assert.deepEqual(task.assignments[0].telemetry.map((e) => e.event), ['started', 'pr_opened']);
+  assert.equal(task.assignments[0].telemetry[0].note, 'cloning octo/demo');
+  assert.ok((await s.api('GET', '/')).data.includes('📡'));
+  // Analytics saw the feed events and the worker telemetry, with ids only.
+  const events = s.pings.map((p) => p.event);
+  for (const e of ['task_posted', 'assigned', 'worker_started', 'worker_pr_opened', 'submitted']) assert.ok(events.includes(e), `pinged ${e}`);
+  const workerPing = s.pings.find((p) => p.event === 'worker_started');
+  assert.equal(workerPing.project, 'piecework-workers');
+  assert.equal(workerPing.sid, `assignment-${aAssignment.id}`);
+  assert.ok(!JSON.stringify(s.pings).includes(A.api_key));
+  assert.ok(!JSON.stringify(s.pings).includes('alpha'));
+  // Tracker tag on public pages, never on admin or account pages.
+  assert.match((await s.api('GET', '/')).data, /wa\.js" data-site="acct_test" data-forms="false"/);
+  assert.doesNotMatch((await s.api('GET', '/admin', null, GM)).data, /wa\.js/);
+  assert.match((await s.api('GET', '/llms.txt')).data, /seriouslysimpleanalytics/i);
+});
+
+test('telemetry rate gap is enforced', async (t) => {
+  const s0 = await start(); t.after(s0.close);
+  // Rebuild with a real gap for this test only.
+  const gapped = { ...cfg, telemetryMinGapMs: 60_000 };
+  const db = openDb(':memory:');
+  const app = createApp({ db, cfg: gapped, analytics: { enabled: false, ping: () => false } });
+  const server = await new Promise((resolve) => { const srv = app.listen(0, '127.0.0.1', () => resolve(srv)); });
+  t.after(() => new Promise((r) => server.close(r)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, path, body, key) => {
+    const headers = { 'Content-Type': 'application/json' }; if (key) headers.Authorization = `Bearer ${key}`;
+    const res = await fetch(base + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    return { status: res.status, data: await res.json().catch(() => null), retry: res.headers.get('retry-after') };
+  };
+  const R = (await call('POST', '/v1/accounts', { kind: 'requester', name: 'ada' })).data;
+  const W = (await call('POST', '/v1/accounts', { kind: 'worker', name: 'worker-w', operator: 'op' })).data;
+  await call('POST', '/v1/faucet', null, R.api_key); await call('POST', '/v1/faucet', null, W.api_key);
+  await call('POST', '/v1/queue/join', { stake: 100 }, W.api_key);
+  const proj = (await call('POST', '/v1/projects', { repo_url: REPO, description: 'd' }, R.api_key)).data;
+  await call('POST', `/v1/admin/projects/${proj.id}/approve`, {}, GM);
+  await call('POST', '/v1/tasks', { repo_url: REPO, title: 'x', body: 'y', bounty: 500 }, R.api_key);
+  dispatch(db, gapped, () => 0.99);
+  assert.equal((await call('POST', '/v1/telemetry', { event: 'started' }, W.api_key)).status, 201);
+  const limited = await call('POST', '/v1/telemetry', { event: 'pr_opened' }, W.api_key);
+  assert.equal(limited.status, 429);
+  assert.ok(Number(limited.retry) >= 1);
 });
